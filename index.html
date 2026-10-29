@@ -78,7 +78,13 @@
     <link
       href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
     />
+    <style>
+      @keyframes bbdFastPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+      .bbd-fast-skel { animation: bbdFastPulse 1.2s ease-in-out infinite; }
+    </style>
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
@@ -97,8 +103,35 @@
       }
     </script>
   </head>
-  <body class="bg-[#F3F5F7] text-[#172126] antialiased selection:bg-[#286F65] selection:text-white">
-    <div id="root"></div>
+  <body class="bg-[#F3F5F7] text-[#172126] antialiased selection:bg-[#286F65] selection:text-white" style="margin:0;background:#F3F5F7;color:#172126;font-family:system-ui,-apple-system,sans-serif;">
+    <div id="root">
+      <div style="background:#14213D;color:#fff;padding:8px 16px;text-align:center;font-size:12px;font-weight:600;">
+        🚚 সিলেট থেকে সারাদেশে দ্রুত ক্যাশ অন ডেলিভারি · পণ্য হাতে পেয়ে মূল্য পরিশোধের সুবিধা
+      </div>
+      <header style="background:#fff;border-bottom:1px solid #E2E8F0;padding:14px 20px;">
+        <div style="max-width:1280px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <div style="width:38px;height:38px;border-radius:10px;background:#14213D;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:18px;">ব</div>
+            <div>
+              <div style="font-weight:700;font-size:18px;color:#14213D;line-height:1.1;">বৈচিত্র্য — Boichitra BD</div>
+              <div style="font-size:11px;color:#52636D;">Fashion, Gadget &amp; Everything</div>
+            </div>
+          </div>
+          <div style="font-size:12px;font-weight:600;color:#286F65;background:#EBF5F3;padding:6px 14px;border-radius:8px;">
+            স্টোর প্রস্তুত হচ্ছে...
+          </div>
+        </div>
+      </header>
+      <main style="max-width:1280px;margin:24px auto;padding:0 16px;">
+        <div class="bbd-fast-skel" style="height:220px;border-radius:18px;background:linear-gradient(135deg,#14213D 0%,#286F65 100%);margin-bottom:24px;"></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:18px;">
+          <div class="bbd-fast-skel" style="height:330px;border-radius:14px;background:#fff;border:1px solid #E2E8F0;"></div>
+          <div class="bbd-fast-skel" style="height:330px;border-radius:14px;background:#fff;border:1px solid #E2E8F0;"></div>
+          <div class="bbd-fast-skel" style="height:330px;border-radius:14px;background:#fff;border:1px solid #E2E8F0;"></div>
+          <div class="bbd-fast-skel" style="height:330px;border-radius:14px;background:#fff;border:1px solid #E2E8F0;"></div>
+        </div>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -22,10 +22,10 @@ export default defineConfig(() => {
       rollupOptions: {
         output: {
           manualChunks(id) {
-            if (id.includes('node_modules/xlsx')) {
+            if (id.includes('node_modules/xlsx') || id.includes('node_modules/cfb') || id.includes('node_modules/ssf')) {
               return 'xlsx';
             }
-            if (id.includes('node_modules/')) {
+            if (id.includes('node_modules/react-dom') || id.includes('node_modules/react/') || id.includes('node_modules/scheduler')) {
               return 'vendor';
             }
           },

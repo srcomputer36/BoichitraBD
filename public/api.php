@@ -31,6 +31,29 @@ if (!headers_sent() && extension_loaded('zlib') && !ini_get('zlib.output_compres
   @ob_start('ob_gzhandler');
 }
 
+// Ultra-fast 0.4ms path: serve cached /api/storefront BEFORE opening SQLite PDO connection!
+$earlyMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+$earlyUri = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+$earlyScriptDir = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'] ?? '')), '/');
+if ($earlyScriptDir !== '' && strpos($earlyUri, $earlyScriptDir) === 0) {
+  $earlyUri = substr($earlyUri, strlen($earlyScriptDir)) ?: '/';
+}
+$earlyStorefrontCache = $storageDir . '/storefront_fast_cache.json';
+$earlyBkrSynced = $storageDir . '/.bkr_auto_synced_v2';
+if (
+  $earlyMethod === 'GET' &&
+  $earlyUri === '/api/storefront' &&
+  file_exists($earlyBkrSynced) &&
+  file_exists($earlyStorefrontCache) &&
+  (time() - @filemtime($earlyStorefrontCache) < 3600)
+) {
+  http_response_code(200);
+  header('Content-Type: application/json; charset=utf-8');
+  header('Cache-Control: no-cache');
+  readfile($earlyStorefrontCache);
+  exit;
+}
+
 function sendJson($data, int $status = 200): void {
   http_response_code($status);
   header('Content-Type: application/json; charset=utf-8');
@@ -1051,16 +1074,35 @@ if ($requestUri === '/api/admin/auth/change-password' && $method === 'POST') {
 // ============================================================================
 // PUBLIC STOREFRONT & CHECKOUT ROUTES
 // ============================================================================
+if ($requestUri === '/api/bangla-qr-image' && $method === 'GET') {
+  $settingsRow = $pdo->query("SELECT * FROM store_settings LIMIT 1")->fetch();
+  $formatted = formatSettingsRow($settingsRow);
+  $rawUrl = (string)($formatted['banglaQrImageUrl'] ?? '');
+  if (preg_match('/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/', $rawUrl, $m)) {
+    http_response_code(200);
+    header('Content-Type: ' . $m[1]);
+    header('Cache-Control: public, max-age=3600');
+    echo base64_decode($m[2]);
+    exit;
+  }
+  if (strpos($rawUrl, 'http') === 0 || strpos($rawUrl, '/') === 0) {
+    header('Location: ' . $rawUrl, true, 302);
+    exit;
+  }
+  http_response_code(404);
+  exit;
+}
+
 if ($requestUri === '/api/storefront' && $method === 'GET') {
-  $bkrAutoSyncMarker = $storageDir . '/.bkr_auto_synced_v2';
+  $bkrAutoSyncMarker = $storageDir . '/.bkr_auto_synced_v3';
   if (!file_exists($bkrAutoSyncMarker)) {
     try {
-      runBusinessKoroCatalogSync($pdo, $storageDir, 'system@boichitrabd.com', 'system', 0, 0, 1, true);
+      runBusinessKoroCatalogSync($pdo, $storageDir, 'system@boichitrabd.com', 'system', 0, 0, 1, false);
       @unlink($storefrontCacheFile);
     } catch (Throwable $_syncErr) {}
   }
 
-  if (file_exists($storefrontCacheFile) && (time() - @filemtime($storefrontCacheFile) < 300)) {
+  if (file_exists($storefrontCacheFile) && (time() - @filemtime($storefrontCacheFile) < 3600)) {
     http_response_code(200);
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-cache');
@@ -1070,18 +1112,14 @@ if ($requestUri === '/api/storefront' && $method === 'GET') {
 
   $settingsRow = $pdo->query("SELECT * FROM store_settings LIMIT 1")->fetch();
   $catRows = $pdo->query("SELECT * FROM categories ORDER BY sort_order ASC, id ASC")->fetchAll();
-  $prodRows = $pdo->query("SELECT * FROM products ORDER BY id DESC")->fetchAll();
+  $prodRows = $pdo->query("SELECT * FROM products ORDER BY updated_at DESC, id DESC")->fetchAll();
   $varRows = $pdo->query("SELECT * FROM product_variants WHERE is_active = 1")->fetchAll();
   $cpnRows = $pdo->query("SELECT * FROM coupons WHERE is_active = 1")->fetchAll();
 
   $catMap = [];
-  $activeCategories = [];
   foreach ($catRows as $c) {
     $formattedCat = formatCategoryRow($c);
     $catMap[$formattedCat['id']] = $formattedCat;
-    if ($formattedCat['isActive']) {
-      $activeCategories[] = $formattedCat;
-    }
   }
 
   $varsByProd = [];
@@ -1090,12 +1128,40 @@ if ($requestUri === '/api/storefront' && $method === 'GET') {
     $varsByProd[$fv['productId']][] = $fv;
   }
 
+  // Sort published products so BusinessKoro latest updated products (bkrSortRank = 0, 1, 2...) come first
+  $publishedRaw = array_values(array_filter($prodRows, fn($p) => (bool)(int)$p['is_published']));
+  usort($publishedRaw, function (array $a, array $b): int {
+    $ga = json_decode((string)($a['gallery_urls_json'] ?? ''), true);
+    $gb = json_decode((string)($b['gallery_urls_json'] ?? ''), true);
+    $rankA = (is_array($ga) && isset($ga['bkrSortRank']) && is_numeric($ga['bkrSortRank'])) ? (int)$ga['bkrSortRank'] : null;
+    $rankB = (is_array($gb) && isset($gb['bkrSortRank']) && is_numeric($gb['bkrSortRank'])) ? (int)$gb['bkrSortRank'] : null;
+    if ($rankA === null && $rankB === null) return (int)$b['id'] - (int)$a['id'];
+    if ($rankA === null) return -1;
+    if ($rankB === null) return 1;
+    if ($rankA !== $rankB) return $rankA - $rankB;
+    return (int)$b['id'] - (int)$a['id'];
+  });
+
   $publishedProducts = [];
-  foreach ($prodRows as $p) {
-    if (!(int)$p['is_published']) continue;
+  $prodCountByCat = [];
+  foreach ($publishedRaw as $p) {
     $pid = (int)$p['id'];
+    $cid = (int)$p['category_id'];
+    $prodCountByCat[$cid] = ($prodCountByCat[$cid] ?? 0) + 1;
     $publishedProducts[] = formatProductRow($p, $varsByProd[$pid] ?? [], $catMap);
   }
+
+  $allActiveCategories = [];
+  $linkedCategories = [];
+  foreach ($catMap as $cid => $fc) {
+    if (!$fc['isActive']) continue;
+    $fc['productCount'] = $prodCountByCat[$cid] ?? 0;
+    $allActiveCategories[] = $fc;
+    if ($fc['productCount'] > 0) {
+      $linkedCategories[] = $fc;
+    }
+  }
+  $activeCategories = !empty($linkedCategories) ? $linkedCategories : $allActiveCategories;
 
   $activeCoupons = [];
   foreach ($cpnRows as $cp) {
@@ -1104,8 +1170,17 @@ if ($requestUri === '/api/storefront' && $method === 'GET') {
     }
   }
 
+  $slimSettings = formatSettingsRow($settingsRow);
+  if (
+    !empty($slimSettings['banglaQrImageUrl']) &&
+    strlen((string)$slimSettings['banglaQrImageUrl']) > 2000 &&
+    strpos((string)$slimSettings['banglaQrImageUrl'], 'data:image/') === 0
+  ) {
+    $slimSettings['banglaQrImageUrl'] = '/api/bangla-qr-image';
+  }
+
   $responsePayload = [
-    'settings' => formatSettingsRow($settingsRow),
+    'settings' => $slimSettings,
     'categories' => $activeCategories,
     'products' => $publishedProducts,
     'coupons' => $activeCoupons,
@@ -1704,6 +1779,9 @@ if ($requestUri === '/api/admin/products' && $method === 'POST') {
         $newParsed['bkrProductId'] = $origParsed['bkrProductId'];
         $newParsed['bkrMinPrice'] = $origParsed['bkrMinPrice'] ?? $origParsed['bkrMinimumSellingPrice'] ?? 0;
         $newParsed['bkrCostPrice'] = $origParsed['bkrCostPrice'] ?? 0;
+        if (isset($origParsed['bkrSortRank']) && is_numeric($origParsed['bkrSortRank'])) {
+          $newParsed['bkrSortRank'] = (int)$origParsed['bkrSortRank'];
+        }
         $galleryUrlsJson = json_encode($newParsed, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
       }
     }
@@ -2008,22 +2086,46 @@ function bkrHttpRequest(string $url, string $method = 'GET', ?array $jsonBody = 
   return ['status' => $status, 'body' => is_string($resp) ? $resp : ''];
 }
 
-function mapBusinessKoroPhpCategory(string $rawCat): array {
-  $lower = strtolower(trim($rawCat));
-  if (strpos($lower, 'fashion') !== false || strpos($lower, 'apparel') !== false || strpos($lower, 'hoodie') !== false) {
-    return ['slug' => 'fashion-item', 'name' => 'Fashion & Apparel', 'nameBn' => 'ফ্যাশন ও পোশাক'];
+function mapBusinessKoroPhpCategory(string $rawCat, string $productName = ''): array {
+  $lowerCat = strtolower(trim($rawCat));
+  $lowerName = strtolower(trim($productName));
+  $combined = $lowerCat . ' ' . $lowerName;
+
+  if (preg_match('/\b(watch|smartwatch|smart watch)\b/i', $lowerName)) {
+    return ['slug' => 'smart-gadgets', 'name' => 'Smartwatch & Gadgets', 'nameBn' => 'স্মার্টওয়াচ ও গ্যাজেট', 'sortOrder' => 1];
   }
-  if (strpos($lower, 'gaming') !== false || strpos($lower, 'game') !== false) {
-    return ['slug' => 'gaming-item', 'name' => 'Gaming Gear', 'nameBn' => 'গেমিং আইটেম'];
+  if (
+    strpos($lowerCat, 'fashion') !== false ||
+    strpos($lowerCat, 'apparel') !== false ||
+    preg_match('/\b(hoodie|dropsoulder|drop-shoulder|pullover|t-shirt|tshirt|panjabi|shirt|jacket|sunglass|glasses|trimmer|kemei|shoe cleaner)\b/i', $combined)
+  ) {
+    return ['slug' => 'fashion-item', 'name' => 'Fashion & Lifestyle', 'nameBn' => 'ফ্যাশন ও লাইফস্টাইল', 'sortOrder' => 2];
   }
-  if (strpos($lower, 'decor') !== false || strpos($lower, 'home') !== false) {
-    return ['slug' => 'decorating-item', 'name' => 'Home & Decor', 'nameBn' => 'হোম ও ডেকোরেশন'];
+  if (
+    strpos($lowerCat, 'gaming') !== false ||
+    strpos($lowerCat, 'game') !== false ||
+    preg_match('/\b(game|gaming|console|cooler|plextone)\b/i', $combined)
+  ) {
+    return ['slug' => 'gaming-item', 'name' => 'Gaming & Console', 'nameBn' => 'গেমিং ও কনসোল', 'sortOrder' => 3];
   }
-  if (strpos($lower, 'gadget') !== false || strpos($lower, 'tech') !== false) {
-    return ['slug' => 'smart-gadgets', 'name' => 'Smart Gadgets', 'nameBn' => 'স্মার্ট গ্যাজেট'];
+  if (preg_match('/\b(earbuds?|earphones?|airpods?|headphones?|headsets?|neckbands?|microphones?|mic|speakers?|boya)\b/i', $combined)) {
+    return ['slug' => 'audio-accessories', 'name' => 'Audio & Microphone', 'nameBn' => 'অডিও ও মাইক্রোফোন', 'sortOrder' => 4];
   }
-  $slug = trim(preg_replace('/[^a-z0-9]+/', '-', $lower), '-') ?: 'smart-gadgets';
-  return ['slug' => $slug, 'name' => trim($rawCat) ?: 'Smart Gadgets', 'nameBn' => trim($rawCat) ?: 'স্মার্ট গ্যাজেট'];
+  if (preg_match('/\b(power bank|powerbank|router|ups|magsafe|charger|charging|140w|olax|jio)\b/i', $combined)) {
+    return ['slug' => 'power-router', 'name' => 'Power Bank & Router', 'nameBn' => 'পাওয়ার ব্যাংক ও রাউটার', 'sortOrder' => 5];
+  }
+  if (
+    strpos($lowerCat, 'decor') !== false ||
+    strpos($lowerCat, 'home') !== false ||
+    preg_match('/\b(lamp|neon|clock|kettle|knife|peeler|kitchen|massage|screwdriver|flashlight|lock|siren|waterproof box)\b/i', $combined)
+  ) {
+    return ['slug' => 'decorating-item', 'name' => 'Home, Kitchen & Decor', 'nameBn' => 'হোম, কিচেন ও ডেকোরেশন', 'sortOrder' => 6];
+  }
+  if (strpos($lowerCat, 'gadget') !== false || strpos($lowerCat, 'tech') !== false) {
+    return ['slug' => 'smart-gadgets', 'name' => 'Smartwatch & Gadgets', 'nameBn' => 'স্মার্টওয়াচ ও গ্যাজেট', 'sortOrder' => 1];
+  }
+  $slug = trim(preg_replace('/[^a-z0-9]+/', '-', $lowerCat), '-') ?: 'smart-gadgets';
+  return ['slug' => $slug, 'name' => trim($rawCat) ?: 'Smartwatch & Gadgets', 'nameBn' => trim($rawCat) ?: 'স্মার্টওয়াচ ও গ্যাজেট', 'sortOrder' => 7];
 }
 
 function resolveBdDivisionPhp(string $district): string {
@@ -2107,7 +2209,8 @@ function runBusinessKoroCatalogSync(
   bool $updateExistingPrices = true
 ): array {
   $cfg = getBusinessKoroPhpConfig();
-  $now = gmdate('Y-m-d\TH:i:s\Z');
+  $nowTs = time();
+  $now = gmdate('Y-m-d\TH:i:s\Z', $nowTs);
   $resp = bkrHttpRequest($cfg['productsUrl'], 'GET');
 
   $catalogItems = [];
@@ -2128,7 +2231,7 @@ function runBusinessKoroCatalogSync(
       elseif (!empty($decoded['data']) && is_array($decoded['data'])) $rawList = $decoded['data'];
       elseif (!empty($decoded['products']) && is_array($decoded['products'])) $rawList = $decoded['products'];
 
-      foreach ($rawList as $idx => $it) {
+      foreach (array_values($rawList) as $idx => $it) {
         if (!is_array($it)) continue;
         $bkrProductId = trim((string)($it['id'] ?? ''));
         $idParts = explode('-', $bkrProductId);
@@ -2147,7 +2250,7 @@ function runBusinessKoroCatalogSync(
         $stock = !$inStock ? 0 : max(1, (int)($it['stockQuantity'] ?? $it['stock_quantity'] ?? 50));
 
         $rawCat = (string)($it['category_name'] ?? (is_string($it['category'] ?? null) ? $it['category'] : 'Smart Gadgets'));
-        $mappedCat = mapBusinessKoroPhpCategory($rawCat);
+        $mappedCat = mapBusinessKoroPhpCategory($rawCat, $name);
 
         $imgUrl = trim((string)($it['image'] ?? $it['image_url'] ?? ($it['images'][0] ?? '')));
         $mediaList = [];
@@ -2186,12 +2289,14 @@ function runBusinessKoroCatalogSync(
 
         $catalogItems[] = [
           'bkrProductId' => $bkrProductId,
+          'sortRank' => (int)$idx,
           'sku' => $sku,
           'name' => $name,
           'nameBn' => $nameBn,
           'catSlug' => $mappedCat['slug'],
           'catName' => $mappedCat['name'],
           'catNameBn' => $mappedCat['nameBn'],
+          'catSortOrder' => (int)($mappedCat['sortOrder'] ?? 10),
           'wholesale' => $costPrice,
           'minSelling' => $minSelling,
           'suggestedSelling' => $suggestedSelling,
@@ -2202,10 +2307,11 @@ function runBusinessKoroCatalogSync(
           'imageUrl' => $imgUrl,
           'mediaList' => $mediaList,
           'variants' => $vars,
-          'isFeatured' => $idx < 12 ? 1 : 0,
-          'isNewArrival' => $idx < 18 ? 1 : 0,
+          'isFeatured' => $idx < 18 ? 1 : 0,
+          'isNewArrival' => $idx < 24 ? 1 : 0,
           'isBestSeller' => ($idx % 2 === 0) ? 1 : 0,
           'isSpecialOffer' => ($suggestedRetail > $suggestedSelling) ? 1 : 0,
+          'isSeasonal' => ($mappedCat['slug'] === 'fashion-item' || $idx < 12) ? 1 : 0,
         ];
       }
     }
@@ -2234,6 +2340,8 @@ function runBusinessKoroCatalogSync(
     if ($dSku !== '') $deletedSkus[$dSku] = true;
   }
 
+  $activeCatIds = [];
+
   foreach ($catalogItems as $it) {
     if (!empty($deletedSkus[strtoupper($it['sku'])])) {
       continue;
@@ -2242,12 +2350,15 @@ function runBusinessKoroCatalogSync(
     $stmtCat->execute([strtolower($it['catSlug'])]);
     $cat = $stmtCat->fetch();
     if (!$cat) {
-      $pdo->prepare("INSERT INTO categories (name, name_bn, slug, description, sort_order, is_active, created_at) VALUES (?, ?, ?, ?, 10, 1, ?)")
-          ->execute([$it['catName'], $it['catNameBn'], strtolower($it['catSlug']), $it['catNameBn'], $now]);
+      $pdo->prepare("INSERT INTO categories (name, name_bn, slug, description, sort_order, is_active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)")
+          ->execute([$it['catName'], $it['catNameBn'], strtolower($it['catSlug']), $it['catNameBn'], $it['catSortOrder'], $now]);
       $catId = (int)$pdo->lastInsertId();
     } else {
       $catId = (int)$cat['id'];
+      $pdo->prepare("UPDATE categories SET name = ?, name_bn = ?, sort_order = ?, is_active = 1 WHERE id = ?")
+          ->execute([$it['catName'], $it['catNameBn'], $it['catSortOrder'], $catId]);
     }
+    $activeCatIds[$catId] = true;
 
     $baseSelling = $markupPct > 0
       ? max($it['suggestedSelling'], (int)round($it['wholesale'] * (1 + $markupPct / 100)))
@@ -2260,6 +2371,7 @@ function runBusinessKoroCatalogSync(
       'bkrProductId' => $it['bkrProductId'],
       'bkrMinPrice' => $it['minSelling'],
       'bkrCostPrice' => $it['wholesale'],
+      'bkrSortRank' => (int)$it['sortRank'],
       'media' => $it['mediaList'],
       'offer' => [
         'badgeText' => '🔥 বিশেষ অফার',
@@ -2269,6 +2381,8 @@ function runBusinessKoroCatalogSync(
       ],
     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
+    $itemTsStr = gmdate('Y-m-d\TH:i:s\Z', $nowTs - (int)$it['sortRank']);
+
     $stmtProd = $pdo->prepare("SELECT * FROM products WHERE UPPER(sku) = ? LIMIT 1");
     $stmtProd->execute([strtoupper($it['sku'])]);
     $exProd = $stmtProd->fetch();
@@ -2277,13 +2391,13 @@ function runBusinessKoroCatalogSync(
       $pid = (int)$exProd['id'];
       $newReg = $updateExistingPrices ? $regPrice : (int)$exProd['price_bdt'];
       $newSale = $updateExistingPrices ? $salePrice : (int)$exProd['sale_price_bdt'];
-      $pdo->prepare("UPDATE products SET name = ?, name_bn = ?, category_id = ?, description = ?, description_bn = ?, price_bdt = ?, sale_price_bdt = ?, stock_quantity = ?, image_url = ?, gallery_urls_json = ?, is_published = ?, updated_at = ? WHERE id = ?")
-          ->execute([$it['name'], $it['nameBn'], $catId, $it['desc'], $it['descBn'], $newReg, $newSale, $it['stock'], $it['imageUrl'] ?: $exProd['image_url'], $galleryJson, $autoPublish ? 1 : (int)$exProd['is_published'], $now, $pid]);
+      $pdo->prepare("UPDATE products SET name = ?, name_bn = ?, category_id = ?, description = ?, description_bn = ?, price_bdt = ?, sale_price_bdt = ?, stock_quantity = ?, image_url = ?, gallery_urls_json = ?, is_featured = ?, is_new_arrival = ?, is_best_seller = ?, is_special_offer = ?, is_seasonal = ?, is_published = ?, updated_at = ? WHERE id = ?")
+          ->execute([$it['name'], $it['nameBn'], $catId, $it['desc'], $it['descBn'], $newReg, $newSale, $it['stock'], $it['imageUrl'] ?: $exProd['image_url'], $galleryJson, $it['isFeatured'], $it['isNewArrival'], $it['isBestSeller'], $it['isSpecialOffer'], $it['isSeasonal'], $autoPublish ? 1 : (int)$exProd['is_published'], $itemTsStr, $pid]);
       $updatedCount++;
     } else {
       $slug = strtolower(preg_replace('/[^a-z0-9]+/i', '-', $it['name'] . '-' . $it['sku']));
-      $pdo->prepare("INSERT INTO products (sku, name, name_bn, slug, category_id, description, description_bn, price_bdt, sale_price_bdt, stock_quantity, low_stock_threshold, image_url, gallery_urls_json, is_featured, is_new_arrival, is_best_seller, is_special_offer, is_seasonal, is_published, seo_title, seo_description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 5, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)")
-          ->execute([strtoupper($it['sku']), $it['name'], $it['nameBn'], $slug, $catId, $it['desc'], $it['descBn'], $regPrice, $salePrice, $it['stock'], $it['imageUrl'], $galleryJson, $it['isFeatured'], $it['isNewArrival'], $it['isBestSeller'], $it['isSpecialOffer'], $autoPublish, $it['nameBn'], $it['descBn'], $now, $now]);
+      $pdo->prepare("INSERT INTO products (sku, name, name_bn, slug, category_id, description, description_bn, price_bdt, sale_price_bdt, stock_quantity, low_stock_threshold, image_url, gallery_urls_json, is_featured, is_new_arrival, is_best_seller, is_special_offer, is_seasonal, is_published, seo_title, seo_description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 5, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+          ->execute([strtoupper($it['sku']), $it['name'], $it['nameBn'], $slug, $catId, $it['desc'], $it['descBn'], $regPrice, $salePrice, $it['stock'], $it['imageUrl'], $galleryJson, $it['isFeatured'], $it['isNewArrival'], $it['isBestSeller'], $it['isSpecialOffer'], $it['isSeasonal'], $autoPublish, $it['nameBn'], $it['descBn'], $itemTsStr, $itemTsStr]);
       $pid = (int)$pdo->lastInsertId();
       $createdCount++;
     }
@@ -2303,12 +2417,26 @@ function runBusinessKoroCatalogSync(
     }
   }
 
+  // Deactivate legacy demo categories that have 0 published products
+  $pubCatRows = $pdo->query("SELECT DISTINCT category_id FROM products WHERE is_published = 1")->fetchAll();
+  $pubCatIds = [];
+  foreach ($pubCatRows as $pcr) {
+    $pubCatIds[(int)$pcr['category_id']] = true;
+  }
+  $allCats = $pdo->query("SELECT id, is_active FROM categories")->fetchAll();
+  foreach ($allCats as $ac) {
+    $cid = (int)$ac['id'];
+    if (empty($pubCatIds[$cid]) && empty($activeCatIds[$cid]) && (int)$ac['is_active']) {
+      $pdo->prepare("UPDATE categories SET is_active = 0 WHERE id = ?")->execute([$cid]);
+    }
+  }
+
   $totalSynced = count($catalogItems);
   $details = "Mode: {$syncMode} | Products: {$totalSynced} (Created: {$createdCount}, Updated: {$updatedCount}, Variants: {$variantsSyncedCount})";
   $pdo->prepare("INSERT INTO audit_logs (actor_email, actor_uid, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'BUSINESSKORO_SYNC', 'BusinessKoro', ?, ?, ?)")
       ->execute([$actorEmail, $actorUid, $syncMode, $details, $now]);
 
-  @file_put_contents($storageDir . '/.bkr_auto_synced_v2', $now);
+  @file_put_contents($storageDir . '/.bkr_auto_synced_v3', $now);
 
   return [
     'mode' => $syncMode,

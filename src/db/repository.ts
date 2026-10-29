@@ -28,6 +28,11 @@ import {
 import { normalizeBdPhone, BANGLADESH_DISTRICTS } from '../lib/bd-locations.ts';
 
 let seedPromise: Promise<void> | null = null;
+let storefrontMemoryCache: { data: any; expiresAt: number } | null = null;
+
+export function invalidateStorefrontCache(): void {
+  storefrontMemoryCache = null;
+}
 
 async function ensureDatabaseTablesCreated(): Promise<void> {
   // First check if the core schema tables already exist (e.g. in managed Cloud SQL).
@@ -248,6 +253,15 @@ export async function ensureStoreInitialized(): Promise<void> {
             db.select().from(coupons),
             db.select().from(products),
           ]);
+      }
+
+      // Fast path: if settings and live BusinessKoro products (with bkrSortRank & linked categories) already exist in DB, skip all startup seeding loops!
+      if (
+        existingSettings.length > 0 &&
+        existingCategories.length > 0 &&
+        existingProducts.some((p) => (p.galleryUrlsJson || '').includes('"bkrSortRank"'))
+      ) {
+        return;
       }
 
       if (existingSettings.length === 0) {
@@ -767,22 +781,17 @@ export async function ensureStoreInitialized(): Promise<void> {
         }
       }
 
-      // Automatically sync real catalog from BusinessKoro Storefront API on startup if not yet synced
-      const hasLiveBkrProducts = latestProds.some((p) => {
-        try {
-          const parsed = JSON.parse(p.galleryUrlsJson || '{}');
-          return Boolean(parsed && parsed.bkrProductId);
-        } catch (_e) {
-          return false;
-        }
-      });
-      if (!hasLiveBkrProducts) {
+      // Automatically sync real catalog from BusinessKoro Storefront API on startup if not yet synced with latest sort rank & category links
+      const hasRankedBkrProducts = latestProds.some((p) =>
+        (p.galleryUrlsJson || '').includes('"bkrSortRank"')
+      );
+      if (!hasRankedBkrProducts) {
         try {
           await syncBusinessKoroProductsInternal('system@boichitrabd.com', 'system', {
             markupPercentage: 0,
             fixedMarkupBdt: 0,
             autoPublish: true,
-            updateExistingPrices: true,
+            updateExistingPrices: false,
           });
         } catch (syncErr) {
           console.warn('Initial BusinessKoro auto-sync skipped:', syncErr);
@@ -798,18 +807,47 @@ export async function ensureStoreInitialized(): Promise<void> {
   return seedPromise;
 }
 
+function extractProductSortRank(galleryUrlsJson: string | null | undefined): number | null {
+  if (!galleryUrlsJson) return null;
+  try {
+    const parsed = JSON.parse(galleryUrlsJson);
+    if (parsed && typeof parsed.bkrSortRank === 'number' && Number.isFinite(parsed.bkrSortRank)) {
+      return parsed.bkrSortRank;
+    }
+  } catch (_e) {}
+  return null;
+}
+
+function compareProductsLatestFirst(
+  a: typeof products.$inferSelect,
+  b: typeof products.$inferSelect
+): number {
+  const rankA = extractProductSortRank(a.galleryUrlsJson);
+  const rankB = extractProductSortRank(b.galleryUrlsJson);
+  // Manual admin products (no bkrSortRank) or newly updated products
+  if (rankA === null && rankB === null) {
+    return b.id - a.id;
+  }
+  if (rankA === null) return -1;
+  if (rankB === null) return 1;
+  if (rankA !== rankB) return rankA - rankB;
+  return b.id - a.id;
+}
+
 export async function getStorefrontData() {
+  if (storefrontMemoryCache && Date.now() < storefrontMemoryCache.expiresAt) {
+    return storefrontMemoryCache.data;
+  }
   try {
     await ensureStoreInitialized();
     const [settingsRows, categoryRows, productRows, variantRows, couponRows] = await Promise.all([
       db.select().from(storeSettings),
-      db.select().from(categories).orderBy(asc(categories.sortOrder)),
-      db.select().from(products).orderBy(desc(products.createdAt)),
+      db.select().from(categories).orderBy(asc(categories.sortOrder), asc(categories.id)),
+      db.select().from(products).orderBy(desc(products.updatedAt), desc(products.id)),
       db.select().from(productVariants),
       db.select().from(coupons),
     ]);
 
-    const activeCategories = categoryRows.filter((c) => c.isActive);
     const activeVariantsByProduct = new Map<number, typeof variantRows>();
     for (const v of variantRows) {
       if (!v.isActive) continue;
@@ -820,34 +858,57 @@ export async function getStorefrontData() {
 
     const catById = new Map(categoryRows.map((c) => [c.id, c]));
 
-    const publishedProducts = productRows
+    const sortedPublishedRows = productRows
       .filter((p) => p.isPublished)
-      .map((p) => {
-        const parsedGallery = parseProductGalleryAndOffer(p);
-        const sanitizedGalleryJson = serializeProductGalleryAndOffer(
-          parsedGallery.media,
-          parsedGallery.offerMeta
-        );
-        return {
-          ...p,
-          name: sanitizeCustomerProductText(p.name) || p.name,
-          nameBn: sanitizeCustomerProductText(p.nameBn) || p.nameBn,
-          description: sanitizeCustomerProductText(p.description) || p.description,
-          descriptionBn: sanitizeCustomerProductText(p.descriptionBn) || p.descriptionBn,
-          galleryUrlsJson: sanitizedGalleryJson,
-          categoryName: catById.get(p.categoryId)?.name || 'General',
-          categoryNameBn: catById.get(p.categoryId)?.nameBn || 'সাধারণ',
-          categorySlug: catById.get(p.categoryId)?.slug || 'general',
-          variants: activeVariantsByProduct.get(p.id) || [],
-        };
-      });
+      .sort(compareProductsLatestFirst);
 
-    return {
+    const productCountByCatId = new Map<number, number>();
+    for (const p of sortedPublishedRows) {
+      productCountByCatId.set(p.categoryId, (productCountByCatId.get(p.categoryId) || 0) + 1);
+    }
+
+    const publishedProducts = sortedPublishedRows.map((p) => {
+      const parsedGallery = parseProductGalleryAndOffer(p);
+      const sanitizedGalleryJson = serializeProductGalleryAndOffer(
+        parsedGallery.media,
+        parsedGallery.offerMeta
+      );
+      return {
+        ...p,
+        name: sanitizeCustomerProductText(p.name) || p.name,
+        nameBn: sanitizeCustomerProductText(p.nameBn) || p.nameBn,
+        description: sanitizeCustomerProductText(p.description) || p.description,
+        descriptionBn: sanitizeCustomerProductText(p.descriptionBn) || p.descriptionBn,
+        galleryUrlsJson: sanitizedGalleryJson,
+        categoryName: catById.get(p.categoryId)?.name || 'General',
+        categoryNameBn: catById.get(p.categoryId)?.nameBn || 'সাধারণ',
+        categorySlug: catById.get(p.categoryId)?.slug || 'general',
+        variants: activeVariantsByProduct.get(p.id) || [],
+      };
+    });
+
+    const categoriesWithCounts = categoryRows
+      .filter((c) => c.isActive)
+      .map((c) => ({
+        ...c,
+        productCount: productCountByCatId.get(c.id) || 0,
+      }));
+
+    const linkedCategories = categoriesWithCounts.filter((c) => c.productCount > 0);
+    const activeCategories =
+      linkedCategories.length > 0 ? linkedCategories : categoriesWithCounts;
+
+    const payload = {
       settings: parseStoreSettingsWithBanglaQr(settingsRows[0]),
       categories: activeCategories,
       products: publishedProducts,
       coupons: couponRows.filter((c) => c.isActive && c.usedCount < c.usageLimit),
     };
+    storefrontMemoryCache = {
+      data: payload,
+      expiresAt: Date.now() + 5 * 60 * 1000, // 5 minutes TTL (invalidated immediately on any write)
+    };
+    return payload;
   } catch (error) {
     console.error('Failed to load storefront data:', error);
     throw new Error('স্টোরের তথ্য লোড করতে সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।', { cause: error });
@@ -1388,6 +1449,32 @@ export async function getAdminOverviewData() {
       }
     }
 
+    const catById = new Map(allCategories.map((c) => [c.id, c]));
+    const demoSkus = new Set([
+      'BBD-HD-101',
+      'BBD-GD-201',
+      'BBD-WT-301',
+      'BBD-PJ-401',
+      'BBD-GD-202',
+      'BBD-BG-501',
+      'BBD-GD-203',
+      'BBD-FS-102',
+      'BBD-BK-101',
+      'BBD-BK-102',
+      'BBD-BK-201',
+      'BBD-BK-202',
+      'BBD-BK-301',
+      'BBD-BK-401',
+    ]);
+    const visibleAdminProducts = allProducts
+      .filter((p) => p.isPublished || !demoSkus.has(p.sku.toUpperCase()))
+      .sort(compareProductsLatestFirst);
+
+    const prodCountByCat = new Map<number, number>();
+    for (const p of visibleAdminProducts) {
+      prodCountByCat.set(p.categoryId, (prodCountByCat.get(p.categoryId) || 0) + 1);
+    }
+
     const stats = {
       totalOrders: allOrders.length,
       awaitingConfirmation: allOrders.filter((o) => o.orderStatus === 'Pending').length,
@@ -1401,8 +1488,15 @@ export async function getAdminOverviewData() {
       grossOrderValueBdt,
       paidRevenueBdt,
       totalCustomers: allCustomers.length,
-      lowStockCount: allProducts.filter((p) => p.stockQuantity <= p.lowStockThreshold).length,
+      lowStockCount: visibleAdminProducts.filter((p) => p.stockQuantity <= p.lowStockThreshold).length,
     };
+
+    const activeAdminCategories = allCategories
+      .filter((c) => c.isActive || (prodCountByCat.get(c.id) || 0) > 0)
+      .map((c) => ({
+        ...c,
+        productCount: prodCountByCat.get(c.id) || 0,
+      }));
 
     return {
       stats,
@@ -1417,11 +1511,14 @@ export async function getAdminOverviewData() {
         };
       }),
       customers: allCustomers,
-      products: allProducts.map((p) => ({
+      products: visibleAdminProducts.map((p) => ({
         ...p,
+        categoryName: catById.get(p.categoryId)?.name || 'General',
+        categoryNameBn: catById.get(p.categoryId)?.nameBn || 'সাধারণ',
+        categorySlug: catById.get(p.categoryId)?.slug || 'general',
         variants: variantsByProduct.get(p.id) || [],
       })),
-      categories: allCategories,
+      categories: activeAdminCategories,
       settings: parseStoreSettingsWithBanglaQr(allSettings[0]),
       coupons: allCoupons,
       auditLogs: allLogs.slice(0, 100),
@@ -1586,6 +1683,9 @@ export async function saveProductAdmin(
               newParsed.bkrMinPrice = origParsed.bkrMinPrice ?? origParsed.bkrMinimumSellingPrice;
               newParsed.bkrMinimumSellingPrice = origParsed.bkrMinimumSellingPrice ?? origParsed.bkrMinPrice;
               newParsed.bkrCostPrice = origParsed.bkrCostPrice;
+              if (typeof origParsed.bkrSortRank === 'number') {
+                newParsed.bkrSortRank = origParsed.bkrSortRank;
+              }
               nextGalleryJson = JSON.stringify(newParsed);
             }
           }
@@ -2101,12 +2201,14 @@ export async function recordExportAuditLog(
 
 export interface BusinessKoroCatalogItem {
   bkrProductId?: string;
+  sortRank?: number;
   sku: string;
   name: string;
   nameBn: string;
   categorySlug: string;
   categoryName: string;
   categoryNameBn: string;
+  categorySortOrder?: number;
   wholesalePriceBdt: number;
   minSellingPriceBdt?: number;
   suggestedSellingPriceBdt: number;
@@ -2120,6 +2222,7 @@ export interface BusinessKoroCatalogItem {
   isNewArrival?: boolean;
   isBestSeller?: boolean;
   isSpecialOffer?: boolean;
+  isSeasonal?: boolean;
   offerBadgeText?: string;
   variants: Array<{
     sku: string;
@@ -2171,9 +2274,10 @@ export function getBuiltInBusinessKoroFeed(): BusinessKoroCatalogItem[] {
       sku: 'BBD-BK-101',
       name: 'Premium Honeycomb PK Cotton Polo T-Shirt',
       nameBn: 'প্রিমিয়াম হানিকম্ব পিকে কটন পোলো টি-শার্ট (মেনস কালেকশন)',
-      categorySlug: 'winter-fashion',
-      categoryName: 'Fashion & Apparel',
-      categoryNameBn: 'ফ্যাশন ও পোশাক',
+      categorySlug: 'fashion-item',
+      categoryName: 'Fashion & Lifestyle',
+      categoryNameBn: 'ফ্যাশন ও লাইফস্টাইল',
+      categorySortOrder: 2,
       wholesalePriceBdt: 520,
       suggestedSellingPriceBdt: 850,
       suggestedRetailPriceBdt: 1050,
@@ -2194,6 +2298,7 @@ export function getBuiltInBusinessKoroFeed(): BusinessKoroCatalogItem[] {
       isNewArrival: true,
       isBestSeller: true,
       isSpecialOffer: true,
+      isSeasonal: true,
       offerBadgeText: '🔥 বেস্টসেলার কালেকশন',
       variants: [
         { sku: 'BBD-BK-101-M-NVY', size: 'M', color: 'Royal Navy', priceAdjustmentBdt: 0, stockQuantity: 12 },
@@ -2204,46 +2309,106 @@ export function getBuiltInBusinessKoroFeed(): BusinessKoroCatalogItem[] {
   ];
 }
 
-function mapBusinessKoroCategory(rawCat: string): {
+function mapBusinessKoroCategory(
+  rawCat: string,
+  productName = ''
+): {
   slug: string;
   name: string;
   nameBn: string;
+  sortOrder: number;
 } {
-  const lower = rawCat.trim().toLowerCase();
-  if (lower.includes('fashion') || lower.includes('apparel') || lower.includes('hoodie')) {
-    return {
-      slug: 'fashion-item',
-      name: 'Fashion & Apparel',
-      nameBn: 'ফ্যাশন ও পোশাক',
-    };
-  }
-  if (lower.includes('gaming') || lower.includes('game')) {
-    return {
-      slug: 'gaming-item',
-      name: 'Gaming Gear',
-      nameBn: 'গেমিং আইটেম',
-    };
-  }
-  if (lower.includes('decor') || lower.includes('home') || lower.includes('lamp')) {
-    return {
-      slug: 'decorating-item',
-      name: 'Home & Decor',
-      nameBn: 'হোম ও ডেকোরেশন',
-    };
-  }
-  if (lower.includes('gadget') || lower.includes('tech') || lower.includes('watch')) {
+  const lowerCat = String(rawCat || '').trim().toLowerCase();
+  const lowerName = String(productName || '').trim().toLowerCase();
+  const combined = `${lowerCat} ${lowerName}`;
+
+  if (/\b(watch|smartwatch|smart watch)\b/i.test(lowerName)) {
     return {
       slug: 'smart-gadgets',
-      name: 'Smart Gadgets',
-      nameBn: 'স্মার্ট গ্যাজেট',
+      name: 'Smartwatch & Gadgets',
+      nameBn: 'স্মার্টওয়াচ ও গ্যাজেট',
+      sortOrder: 1,
+    };
+  }
+  if (
+    lowerCat.includes('fashion') ||
+    lowerCat.includes('apparel') ||
+    /\b(hoodie|dropsoulder|drop-shoulder|pullover|t-shirt|tshirt|panjabi|shirt|jacket|sunglass|glasses|trimmer|kemei|shoe cleaner)\b/i.test(
+      combined
+    )
+  ) {
+    return {
+      slug: 'fashion-item',
+      name: 'Fashion & Lifestyle',
+      nameBn: 'ফ্যাশন ও লাইফস্টাইল',
+      sortOrder: 2,
+    };
+  }
+  if (
+    lowerCat.includes('gaming') ||
+    lowerCat.includes('game') ||
+    /\b(game|gaming|console|cooler|plextone)\b/i.test(combined)
+  ) {
+    return {
+      slug: 'gaming-item',
+      name: 'Gaming & Console',
+      nameBn: 'গেমিং ও কনসোল',
+      sortOrder: 3,
+    };
+  }
+  if (
+    /\b(earbuds?|earphones?|airpods?|headphones?|headsets?|neckbands?|microphones?|mic|speakers?|boya)\b/i.test(
+      combined
+    )
+  ) {
+    return {
+      slug: 'audio-accessories',
+      name: 'Audio & Microphone',
+      nameBn: 'অডিও ও মাইক্রোফোন',
+      sortOrder: 4,
+    };
+  }
+  if (
+    /\b(power bank|powerbank|router|ups|magsafe|charger|charging|140w|olax|jio)\b/i.test(
+      combined
+    )
+  ) {
+    return {
+      slug: 'power-router',
+      name: 'Power Bank & Router',
+      nameBn: 'পাওয়ার ব্যাংক ও রাউটার',
+      sortOrder: 5,
+    };
+  }
+  if (
+    lowerCat.includes('decor') ||
+    lowerCat.includes('home') ||
+    /\b(lamp|neon|clock|kettle|knife|peeler|kitchen|massage|screwdriver|flashlight|lock|siren|waterproof box)\b/i.test(
+      combined
+    )
+  ) {
+    return {
+      slug: 'decorating-item',
+      name: 'Home, Kitchen & Decor',
+      nameBn: 'হোম, কিচেন ও ডেকোরেশন',
+      sortOrder: 6,
+    };
+  }
+  if (lowerCat.includes('gadget') || lowerCat.includes('tech')) {
+    return {
+      slug: 'smart-gadgets',
+      name: 'Smartwatch & Gadgets',
+      nameBn: 'স্মার্টওয়াচ ও গ্যাজেট',
+      sortOrder: 1,
     };
   }
   const slug =
-    lower.replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'featured-collection';
+    lowerCat.replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'smart-gadgets';
   return {
     slug,
-    name: rawCat.trim() || 'Smart Gadgets',
-    nameBn: rawCat.trim() || 'স্মার্ট গ্যাজেট',
+    name: rawCat.trim() || 'Smartwatch & Gadgets',
+    nameBn: rawCat.trim() || 'স্মার্টওয়াচ ও গ্যাজেট',
+    sortOrder: 7,
   };
 }
 
@@ -2327,7 +2492,7 @@ function normalizeRemoteBusinessKoroPayload(rawItems: any[]): BusinessKoroCatalo
         (typeof item.category === 'string' ? item.category : item.category?.name) ||
         'Smart Gadgets'
     ).trim();
-    const mappedCat = mapBusinessKoroCategory(rawCat);
+    const mappedCat = mapBusinessKoroCategory(rawCat, rawName);
 
     const primaryImg = String(
       item.image ||
@@ -2390,12 +2555,14 @@ function normalizeRemoteBusinessKoroPayload(rawItems: any[]): BusinessKoroCatalo
 
     normalized.push({
       bkrProductId,
+      sortRank: i,
       sku,
       name,
       nameBn,
       categorySlug: mappedCat.slug,
       categoryName: mappedCat.name,
       categoryNameBn: mappedCat.nameBn,
+      categorySortOrder: mappedCat.sortOrder,
       wholesalePriceBdt: costPrice,
       minSellingPriceBdt: minSellingPrice,
       suggestedSellingPriceBdt: suggestedSelling,
@@ -2405,10 +2572,11 @@ function normalizeRemoteBusinessKoroPayload(rawItems: any[]): BusinessKoroCatalo
       descriptionBn: sanitizeCustomerProductText(rawDescBn) || rawDescBn,
       imageUrl: primaryImg,
       galleryMedia,
-      isFeatured: i < 12,
-      isNewArrival: i < 18,
+      isFeatured: i < 18,
+      isNewArrival: i < 24,
       isBestSeller: i % 2 === 0,
       isSpecialOffer: suggestedRetail > suggestedSelling,
+      isSeasonal: mappedCat.slug === 'fashion-item' || i < 12,
       offerBadgeText: '🔥 বিশেষ অফার',
       variants,
     });
@@ -2563,12 +2731,16 @@ async function syncBusinessKoroProductsInternal(
     let createdCount = 0;
     let updatedCount = 0;
     let variantsSyncedCount = 0;
-    const now = new Date();
+    const nowMs = Date.now();
+    const activeCatIds = new Set<number>();
 
-    for (const item of catalogItems) {
+    for (let itemIdx = 0; itemIdx < catalogItems.length; itemIdx++) {
+      const item = catalogItems[itemIdx];
       if (!restoreDeleted && deletedSkuSet.has(item.sku.toUpperCase())) {
         continue;
       }
+      const sortRank = typeof item.sortRank === 'number' ? item.sortRank : itemIdx;
+      const desiredSortOrder = item.categorySortOrder ?? 10;
       let cat = catBySlug.get(item.categorySlug.toLowerCase());
       if (!cat) {
         const insertedCat = await tx
@@ -2578,13 +2750,32 @@ async function syncBusinessKoroProductsInternal(
             nameBn: item.categoryNameBn,
             slug: item.categorySlug.toLowerCase(),
             description: `${item.categoryNameBn} — প্রিমিয়াম কালেকশন`,
-            sortOrder: catBySlug.size + 1,
+            sortOrder: desiredSortOrder,
             isActive: true,
           })
           .returning();
         cat = insertedCat[0];
         catBySlug.set(cat.slug.toLowerCase(), cat);
+      } else if (
+        cat.name !== item.categoryName ||
+        cat.nameBn !== item.categoryNameBn ||
+        cat.sortOrder !== desiredSortOrder ||
+        !cat.isActive
+      ) {
+        const updatedCat = await tx
+          .update(categories)
+          .set({
+            name: item.categoryName,
+            nameBn: item.categoryNameBn,
+            sortOrder: desiredSortOrder,
+            isActive: true,
+          })
+          .where(eq(categories.id, cat.id))
+          .returning();
+        cat = updatedCat[0] || cat;
+        catBySlug.set(cat.slug.toLowerCase(), cat);
       }
+      activeCatIds.add(cat.id);
 
       const minPrice = item.minSellingPriceBdt || item.wholesalePriceBdt;
       const baseSellingPrice =
@@ -2622,8 +2813,11 @@ async function syncBusinessKoroProductsInternal(
       galleryPayloadObj.bkrProductId = item.bkrProductId || '';
       galleryPayloadObj.bkrMinPrice = minPrice;
       galleryPayloadObj.bkrCostPrice = item.wholesalePriceBdt;
+      galleryPayloadObj.bkrSortRank = sortRank;
       const serializedGallery = JSON.stringify(galleryPayloadObj);
 
+      // Assign descending timestamps so index 0 (BusinessKoro's latest product) has the newest timestamp
+      const itemTimestamp = new Date(nowMs - sortRank * 1000);
       const cleanSku = item.sku.trim().toUpperCase();
       const existingProd = prodBySku.get(cleanSku);
 
@@ -2643,8 +2837,13 @@ async function syncBusinessKoroProductsInternal(
             stockQuantity: item.stockQuantity,
             imageUrl: item.imageUrl || existingProd.imageUrl,
             galleryUrlsJson: serializedGallery,
+            isFeatured: Boolean(item.isFeatured),
+            isNewArrival: Boolean(item.isNewArrival),
+            isBestSeller: Boolean(item.isBestSeller),
+            isSpecialOffer: Boolean(item.isSpecialOffer),
+            isSeasonal: Boolean(item.isSeasonal),
             isPublished: autoPublish ? true : existingProd.isPublished,
-            updatedAt: now,
+            updatedAt: itemTimestamp,
           })
           .where(eq(products.id, existingProd.id));
         productId = existingProd.id;
@@ -2676,10 +2875,12 @@ async function syncBusinessKoroProductsInternal(
             isNewArrival: Boolean(item.isNewArrival),
             isBestSeller: Boolean(item.isBestSeller),
             isSpecialOffer: Boolean(item.isSpecialOffer),
-            isSeasonal: false,
+            isSeasonal: Boolean(item.isSeasonal),
             isPublished: autoPublish,
             seoTitle: item.nameBn,
             seoDescription: item.descriptionBn,
+            createdAt: itemTimestamp,
+            updatedAt: itemTimestamp,
           })
           .returning();
         productId = insertedProd[0].id;
@@ -2714,6 +2915,21 @@ async function syncBusinessKoroProductsInternal(
           });
         }
         variantsSyncedCount++;
+      }
+    }
+
+    // Deactivate any legacy demo categories that have 0 published products
+    const refreshedProds = await tx.select().from(products);
+    const publishedCatIds = new Set(
+      refreshedProds.filter((p) => p.isPublished).map((p) => p.categoryId)
+    );
+    const allCurrentCats = await tx.select().from(categories);
+    for (const c of allCurrentCats) {
+      if (!publishedCatIds.has(c.id) && !activeCatIds.has(c.id) && c.isActive) {
+        await tx
+          .update(categories)
+          .set({ isActive: false })
+          .where(eq(categories.id, c.id));
       }
     }
 

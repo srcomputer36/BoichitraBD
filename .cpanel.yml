@@ -3,6 +3,7 @@ deployment:
   tasks:
     - export DEPLOYPATH=/home/boichitr/public_html/
     - /bin/cp -Rf src $DEPLOYPATH
+    - /bin/cp -Rf cpanel_release/assets $DEPLOYPATH
+    - /bin/cp -f cpanel_release/index.html $DEPLOYPATH/index.html
     - /bin/cp -f public/api.php $DEPLOYPATH
     - /bin/cp -f public/.htaccess $DEPLOYPATH
-    - /bin/cp -f public/cpanel_index.html $DEPLOYPATH/index.html

@@ -62,6 +62,7 @@ export interface Category {
   imageUrl: string | null;
   sortOrder: number;
   isActive: boolean;
+  productCount?: number;
 }
 
 export interface ManualPaymentMeta {

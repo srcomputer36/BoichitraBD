@@ -1,6 +1,7 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
+import zlib from 'zlib';
 import { createServer as createViteServer, build as viteBuild } from 'vite';
 import * as dotenv from 'dotenv';
 import * as XLSX from 'xlsx';
@@ -26,6 +27,7 @@ import {
   validateCouponOnServer,
   getBusinessKoroSyncStatus,
   syncBusinessKoroProducts,
+  invalidateStorefrontCache,
 } from './src/db/repository.ts';
 import {
   requireAdminAuth,
@@ -47,6 +49,23 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json({ limit: '15mb' }));
+
+let cachedStorefrontJson = '';
+let cachedStorefrontGzip: Buffer | null = null;
+
+app.use('/api', (req, res, next) => {
+  if (req.method !== 'GET' && req.path !== '/coupons/validate' && req.path !== '/orders/track') {
+    invalidateStorefrontCache();
+    cachedStorefrontJson = '';
+    cachedStorefrontGzip = null;
+    res.on('finish', () => {
+      invalidateStorefrontCache();
+      cachedStorefrontJson = '';
+      cachedStorefrontGzip = null;
+    });
+  }
+  next();
+});
 
 // Rate limiter for public and login endpoints
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
@@ -257,11 +276,22 @@ app.post('/api/admin/auth/change-password', requireAdminAuth, async (req: AuthRe
 // PUBLIC STOREFRONT & GUEST CHECKOUT ROUTES
 // ============================================================================
 
-app.get('/api/storefront', async (_req, res) => {
+app.get('/api/storefront', async (req, res) => {
   try {
     const data = await getStorefrontData();
-    res.setHeader('Cache-Control', 'no-store');
-    res.json(data);
+    if (!cachedStorefrontJson) {
+      cachedStorefrontJson = JSON.stringify(data);
+      cachedStorefrontGzip = zlib.gzipSync(Buffer.from(cachedStorefrontJson, 'utf-8'));
+    }
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    const acceptEnc = String(req.headers['accept-encoding'] || '');
+    if (cachedStorefrontGzip && acceptEnc.includes('gzip')) {
+      res.setHeader('Content-Encoding', 'gzip');
+      res.setHeader('Vary', 'Accept-Encoding');
+      return res.end(cachedStorefrontGzip);
+    }
+    return res.end(cachedStorefrontJson);
   } catch (error: any) {
     console.error('GET /api/storefront error:', error);
     res.status(500).json({ error: error.message || 'স্টোরের তথ্য লোড করা যায়নি।' });
@@ -1032,7 +1062,7 @@ app.get('/sitemap.xml', async (req, res) => {
     const urls = [
       `<url><loc>${baseUrl}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>`,
       ...data.products.map(
-        (p) =>
+        (p: any) =>
           `<url><loc>${baseUrl}/?product=${encodeURIComponent(p.slug)}</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>`
       ),
     ];
@@ -1060,6 +1090,20 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Boichitra BD Server running on http://0.0.0.0:${PORT}`);
+    // Pre-warm storefront cache immediately on startup so first visitor gets <2ms response
+    getStorefrontData()
+      .then((data) => {
+        const slimSettings =
+          data.settings &&
+          typeof data.settings.banglaQrImageUrl === 'string' &&
+          data.settings.banglaQrImageUrl.length > 2000 &&
+          data.settings.banglaQrImageUrl.startsWith('data:image/')
+            ? { ...data.settings, banglaQrImageUrl: '/api/bangla-qr-image' }
+            : data.settings;
+        cachedStorefrontJson = JSON.stringify({ ...data, settings: slimSettings });
+        cachedStorefrontGzip = zlib.gzipSync(Buffer.from(cachedStorefrontJson, 'utf-8'));
+      })
+      .catch(() => {});
   });
 }
 

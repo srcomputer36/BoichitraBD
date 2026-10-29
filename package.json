@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx server.ts",
     "start": "node server.ts",
-    "build": "vite build",
+    "build": "vite build && vite build --outDir cpanel_release --emptyOutDir && rm -rf cpanel_release/assets/aistudio cpanel_release/api.php cpanel_release/cpanel_index.html cpanel_release/.htaccess",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"

@@ -34,6 +34,7 @@ export const ResilientProductImage: React.FC<ProductImageProps> = ({
       alt={alt}
       referrerPolicy="no-referrer"
       loading="lazy"
+      decoding="async"
       onError={() => setHasError(true)}
       className={className}
     />
@@ -44,12 +45,14 @@ interface ProductCardProps {
   product: Product;
   onSelect: (product: Product, preselectedVariant?: ProductVariant | null) => void;
   onQuickAdd: (product: Product, selectedVariant?: ProductVariant | null) => void;
+  onSelectCategory?: (categoryId: number) => void;
 }
 
 export const ProductCard: React.FC<ProductCardProps> = ({
   product,
   onSelect,
   onQuickAdd,
+  onSelectCategory,
 }) => {
   const { allMediaWithPrimary, offerMeta, imageCount, videoCount } =
     parseProductGalleryAndOffer(product);
@@ -244,7 +247,21 @@ export const ProductCard: React.FC<ProductCardProps> = ({
         {/* Clean Unboxed Metadata & Title */}
         <div className="p-4 pb-2">
           <div className="flex items-center gap-1.5 text-xs text-slate-500 mb-1.5">
-            <span className="truncate">{product.categoryNameBn || product.categoryName}</span>
+            {onSelectCategory ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelectCategory(product.categoryId);
+                }}
+                className="truncate font-semibold text-[#286F65] hover:text-[#14213D] hover:underline transition-colors"
+                title={`${product.categoryNameBn || product.categoryName} বিভাগের সকল পণ্য দেখুন`}
+              >
+                {product.categoryNameBn || product.categoryName}
+              </button>
+            ) : (
+              <span className="truncate">{product.categoryNameBn || product.categoryName}</span>
+            )}
             <span aria-hidden="true">·</span>
             <span className="font-mono text-[11px] tabular-nums">{product.sku}</span>
             <span aria-hidden="true">·</span>

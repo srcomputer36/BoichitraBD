@@ -65,7 +65,7 @@ const AdminPanel = React.lazy(() =>
 );
 
 const ITEMS_PER_PAGE = 12;
-const STOREFRONT_CACHE_KEY = 'boichitra_storefront_fast_v4';
+const STOREFRONT_CACHE_KEY = 'boichitra_storefront_fast_v5';
 
 function readCachedStorefront(): {
   settings: StoreSettings | null;
@@ -308,12 +308,46 @@ export default function App() {
     }
   }, [currentDistrictObj, selectedUpazila]);
 
+  const categoryProductCounts = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const p of products) {
+      counts.set(p.categoryId, (counts.get(p.categoryId) || 0) + 1);
+    }
+    return counts;
+  }, [products]);
+
+  const handleSelectCategory = useCallback(
+    (catId: number | 'ALL', scrollToCatalog = true) => {
+      setSelectedCategoryId(catId);
+      setCollectionTab('all');
+      setSearchQuery('');
+      if (scrollToCatalog) {
+        setTimeout(() => {
+          document.getElementById('catalog')?.scrollIntoView({ behavior: 'smooth' });
+        }, 40);
+      }
+    },
+    []
+  );
+
   // Filter & Sort Products
   const filteredProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
+    const selectedCatObj =
+      selectedCategoryId === 'ALL'
+        ? null
+        : categories.find((c) => c.id === selectedCategoryId) || null;
+
     const list = products.filter((p) => {
-      if (selectedCategoryId !== 'ALL' && p.categoryId !== selectedCategoryId) {
-        return false;
+      if (selectedCategoryId !== 'ALL') {
+        const matchesId = Number(p.categoryId) === Number(selectedCategoryId);
+        const matchesSlug =
+          Boolean(selectedCatObj?.slug) &&
+          Boolean(p.categorySlug) &&
+          p.categorySlug?.toLowerCase() === selectedCatObj?.slug.toLowerCase();
+        if (!matchesId && !matchesSlug) {
+          return false;
+        }
       }
       if (collectionTab === 'featured' && !p.isFeatured) return false;
       if (collectionTab === 'new' && !p.isNewArrival) return false;
@@ -332,20 +366,24 @@ export default function App() {
         p.sku.toLowerCase().includes(q) ||
         p.description.toLowerCase().includes(q) ||
         p.descriptionBn.toLowerCase().includes(q) ||
-        (p.categoryNameBn && p.categoryNameBn.toLowerCase().includes(q))
+        (p.categoryNameBn && p.categoryNameBn.toLowerCase().includes(q)) ||
+        (p.categoryName && p.categoryName.toLowerCase().includes(q))
       );
     });
 
-    return [...list].sort((a, b) => {
-      const priceA =
-        a.salePriceBdt && a.salePriceBdt < a.priceBdt ? a.salePriceBdt : a.priceBdt;
-      const priceB =
-        b.salePriceBdt && b.salePriceBdt < b.priceBdt ? b.salePriceBdt : b.priceBdt;
-      if (sortBy === 'price-asc') return priceA - priceB;
-      if (sortBy === 'price-desc') return priceB - priceA;
-      return b.id - a.id;
-    });
-  }, [products, selectedCategoryId, collectionTab, maxPriceFilter, searchQuery, sortBy]);
+    if (sortBy === 'price-asc' || sortBy === 'price-desc') {
+      return [...list].sort((a, b) => {
+        const priceA =
+          a.salePriceBdt && a.salePriceBdt < a.priceBdt ? a.salePriceBdt : a.priceBdt;
+        const priceB =
+          b.salePriceBdt && b.salePriceBdt < b.priceBdt ? b.salePriceBdt : b.priceBdt;
+        if (sortBy === 'price-asc') return priceA - priceB;
+        return priceB - priceA;
+      });
+    }
+    // Preserve server-side latest-updated order (BusinessKoro's latest updated products first)
+    return list;
+  }, [products, categories, selectedCategoryId, collectionTab, maxPriceFilter, searchQuery, sortBy]);
 
   // Reset pagination when filters change
   useEffect(() => {
@@ -867,18 +905,22 @@ export default function App() {
               aria-label="বিভাগ নির্বাচন করুন"
               value={selectedCategoryId}
               onChange={(e) =>
-                setSelectedCategoryId(
-                  e.target.value === 'ALL' ? 'ALL' : Number(e.target.value)
+                handleSelectCategory(
+                  e.target.value === 'ALL' ? 'ALL' : Number(e.target.value),
+                  true
                 )
               }
               className="px-3.5 py-2 text-xs sm:text-sm font-medium bg-slate-100 hover:bg-slate-200/70 text-[#14213D] rounded-lg border border-slate-200/80 focus:outline-none focus:border-[#286F65]"
             >
-              <option value="ALL">সকল বিভাগ (All Departments)</option>
-              {categories.map((cat) => (
-                <option key={cat.id} value={cat.id}>
-                  {cat.nameBn} — {cat.name}
-                </option>
-              ))}
+              <option value="ALL">সকল বিভাগ ({products.length}টি পণ্য)</option>
+              {categories.map((cat) => {
+                const count = cat.productCount ?? categoryProductCounts.get(cat.id) ?? 0;
+                return (
+                  <option key={cat.id} value={cat.id}>
+                    {cat.nameBn} ({count}টি পণ্য) — {cat.name}
+                  </option>
+                );
+              })}
             </select>
           </div>
 
@@ -979,8 +1021,18 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    setCollectionTab('seasonal');
-                    document.getElementById('catalog')?.scrollIntoView({ behavior: 'smooth' });
+                    const fashionCat = categories.find(
+                      (c) =>
+                        c.slug.includes('fashion') ||
+                        c.name.toLowerCase().includes('fashion')
+                    );
+                    if (fashionCat) {
+                      handleSelectCategory(fashionCat.id, true);
+                    } else {
+                      setSelectedCategoryId('ALL');
+                      setCollectionTab('seasonal');
+                      document.getElementById('catalog')?.scrollIntoView({ behavior: 'smooth' });
+                    }
                   }}
                   className="text-xs font-semibold text-[#14213D] hover:text-[#286F65] inline-flex items-center gap-1 pt-1"
                 >
@@ -1011,11 +1063,18 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    const gadgetCat = categories.find((c) =>
-                      c.slug.includes('smart-gadgets')
+                    const gadgetCat = categories.find(
+                      (c) =>
+                        c.slug === 'smart-gadgets' ||
+                        c.slug.includes('gadget') ||
+                        c.slug.includes('power') ||
+                        c.slug.includes('audio')
                     );
-                    if (gadgetCat) setSelectedCategoryId(gadgetCat.id);
-                    document.getElementById('catalog')?.scrollIntoView({ behavior: 'smooth' });
+                    if (gadgetCat) {
+                      handleSelectCategory(gadgetCat.id, true);
+                    } else {
+                      handleSelectCategory('ALL', true);
+                    }
                   }}
                   className="text-xs font-semibold text-[#14213D] hover:text-[#286F65] inline-flex items-center gap-1 pt-1"
                 >
@@ -1043,37 +1102,47 @@ export default function App() {
             {selectedCategoryId !== 'ALL' && (
               <button
                 type="button"
-                onClick={() => setSelectedCategoryId('ALL')}
+                onClick={() => handleSelectCategory('ALL', false)}
                 className="text-xs font-semibold text-[#286F65] hover:underline"
               >
-                সকল বিভাগ দেখান
+                সকল বিভাগ দেখান ({products.length}টি পণ্য)
               </button>
             )}
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
             {categories.map((cat) => {
               const isSelected = selectedCategoryId === cat.id;
+              const count = cat.productCount ?? categoryProductCounts.get(cat.id) ?? 0;
               return (
                 <button
                   key={cat.id}
                   type="button"
                   onClick={() =>
-                    setSelectedCategoryId(isSelected ? 'ALL' : cat.id)
+                    handleSelectCategory(isSelected ? 'ALL' : cat.id, true)
                   }
-                  className={`text-left p-4 rounded-xl border transition-all ${
+                  className={`text-left p-4 rounded-xl border transition-all flex flex-col justify-between gap-1.5 ${
                     isSelected
                       ? 'bg-[#14213D] text-white border-[#14213D] shadow-sm'
                       : 'bg-white text-[#172126] border-slate-200/90 hover:border-[#286F65]'
                   }`}
                 >
-                  <div className="text-sm font-bold truncate">{cat.nameBn}</div>
+                  <div>
+                    <div className="text-sm font-bold truncate">{cat.nameBn}</div>
+                    <div
+                      className={`text-xs truncate mt-0.5 ${
+                        isSelected ? 'text-slate-300' : 'text-slate-500'
+                      }`}
+                    >
+                      {cat.name}
+                    </div>
+                  </div>
                   <div
-                    className={`text-xs truncate mt-0.5 ${
-                      isSelected ? 'text-slate-300' : 'text-slate-500'
+                    className={`text-[11px] font-semibold tabular-nums ${
+                      isSelected ? 'text-emerald-300' : 'text-[#286F65]'
                     }`}
                   >
-                    {cat.name}
+                    {count}টি পণ্য →
                   </div>
                 </button>
               );
@@ -1380,6 +1449,7 @@ export default function App() {
                     key={product.id}
                     product={product}
                     onSelect={(prod, chosenVar) => openProductDetail(prod, chosenVar)}
+                    onSelectCategory={(catId) => handleSelectCategory(catId, true)}
                     onQuickAdd={(prod, chosenVar) => {
                       const variantToUse =
                         chosenVar !== undefined
@@ -1777,7 +1847,17 @@ export default function App() {
                         '🔥 বিশেষ অফার'}
                     </span>
                   )}
-                  <span>{activeProduct.categoryNameBn || activeProduct.categoryName}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const catId = activeProduct.categoryId;
+                      closeProductDetail();
+                      handleSelectCategory(catId, true);
+                    }}
+                    className="font-semibold text-[#286F65] hover:text-[#14213D] hover:underline"
+                  >
+                    {activeProduct.categoryNameBn || activeProduct.categoryName}
+                  </button>
                   <span aria-hidden="true">·</span>
                   <span className="font-mono">SKU: {activeProduct.sku}</span>
                   <span aria-hidden="true">·</span>

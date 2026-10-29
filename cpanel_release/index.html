@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="bn">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      (function () {
+        try {
+          var currentFetch = window.fetch ? window.fetch.bind(window) : undefined;
+          var desc =
+            Object.getOwnPropertyDescriptor(window, 'fetch') ||
+            Object.getOwnPropertyDescriptor(Window.prototype, 'fetch');
+          if (desc && desc.configurable !== false && (!desc.writable && !desc.set)) {
+            Object.defineProperty(window, 'fetch', {
+              configurable: true,
+              enumerable: true,
+              get: function () {
+                return currentFetch;
+              },
+              set: function (fn) {
+                if (typeof fn === 'function') {
+                  currentFetch = fn;
+                }
+              },
+            });
+          }
+        } catch (_e) {}
+
+        window.addEventListener(
+          'error',
+          function (event) {
+            var filename = (event && event.filename) || '';
+            var message = (event && event.message) || '';
+            if (
+              filename.indexOf('chrome-extension://') === 0 ||
+              filename.indexOf('moz-extension://') === 0 ||
+              message.indexOf('Cannot set property fetch') !== -1
+            ) {
+              event.stopImmediatePropagation();
+              event.preventDefault();
+            }
+          },
+          true
+        );
+
+        try {
+          window.__BOICHITRA_STOREFRONT_PREFETCH__ = window
+            .fetch('/api/storefront')
+            .then(function (r) {
+              return r.ok ? r.json() : null;
+            })
+            .catch(function () {
+              return null;
+            });
+        } catch (_e) {}
+      })();
+    </script>
+    <title>Boichitra BD — বৈচিত্র্য | Fashion, Gadget &amp; Everything</title>
+    <meta
+      name="description"
+      content="বৈচিত্র্য মানে সবকিছু এক জায়গায়! শীতের হুডি থেকে গরমের স্মার্ট গ্যাজেট, ট্রেন্ডি সব প্রোডাক্ট পাবে সিলেট থেকে সারাদেশে।"
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Boichitra BD — বৈচিত্র্য" />
+    <meta property="og:title" content="Boichitra BD — বৈচিত্র্য | Fashion, Gadget &amp; Everything" />
+    <meta
+      property="og:description"
+      content="বৈচিত্র্য মানে সবকিছু এক জায়গায়! শীতের হুডি থেকে গরমের স্মার্ট গ্যাজেট, ট্রেন্ডি সব প্রোডাক্ট পাবে সিলেট থেকে সারাদেশে।"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Boichitra BD — বৈচিত্র্য | Fashion, Gadget &amp; Everything" />
+    <meta
+      name="twitter:description"
+      content="বৈচিত্র্য মানে সবকিছু এক জায়গায়! শীতের হুডি থেকে গরমের স্মার্ট গ্যাজেট, ট্রেন্ডি সব প্রোডাক্ট পাবে সিলেট থেকে সারাদেশে।"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
+    />
+    <style>@keyframes bbdFastPulse{0%,to{opacity:1}50%{opacity:.45}}.bbd-fast-skel{animation:1.2s ease-in-out infinite bbdFastPulse}</style>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "OnlineStore",
+        "name": "Boichitra BD — বৈচিত্র্য",
+        "alternateName": "বৈচিত্র্য",
+        "slogan": "Fashion, Gadget & Everything",
+        "description": "বৈচিত্র্য মানে সবকিছু এক জায়গায়! শীতের হুডি থেকে গরমের স্মার্ট গ্যাজেট, ট্রেন্ডি সব প্রোডাক্ট পাবে সিলেট থেকে সারাদেশে।",
+        "currenciesAccepted": "BDT",
+        "paymentAccepted": "Cash on Delivery",
+        "address": {
+          "@type": "PostalAddress",
+          "addressLocality": "Sylhet",
+          "addressCountry": "BD"
+        }
+      }
+    </script>
+    <script type="module" crossorigin src="/assets/index-vWubrNzf.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/rolldown-runtime-WkwZ5CU-.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-CTym4sTV.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-COMDy1Lc.css">
+  </head>
+  <body class="bg-[#F3F5F7] text-[#172126] antialiased selection:bg-[#286F65] selection:text-white" style="margin:0;background:#F3F5F7;color:#172126;font-family:system-ui,-apple-system,sans-serif;">
+    <div id="root">
+      <div style="background:#14213D;color:#fff;padding:8px 16px;text-align:center;font-size:12px;font-weight:600;">
+        🚚 সিলেট থেকে সারাদেশে দ্রুত ক্যাশ অন ডেলিভারি · পণ্য হাতে পেয়ে মূল্য পরিশোধের সুবিধা
+      </div>
+      <header style="background:#fff;border-bottom:1px solid #E2E8F0;padding:14px 20px;">
+        <div style="max-width:1280px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <div style="width:38px;height:38px;border-radius:10px;background:#14213D;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:18px;">ব</div>
+            <div>
+              <div style="font-weight:700;font-size:18px;color:#14213D;line-height:1.1;">বৈচিত্র্য — Boichitra BD</div>
+              <div style="font-size:11px;color:#52636D;">Fashion, Gadget &amp; Everything</div>
+            </div>
+          </div>
+          <div style="font-size:12px;font-weight:600;color:#286F65;background:#EBF5F3;padding:6px 14px;border-radius:8px;">
+            স্টোর প্রস্তুত হচ্ছে...
+          </div>
+        </div>
+      </header>
+      <main style="max-width:1280px;margin:24px auto;padding:0 16px;">
+        <div class="bbd-fast-skel" style="height:220px;border-radius:18px;background:linear-gradient(135deg,#14213D 0%,#286F65 100%);margin-bottom:24px;"></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:18px;">
+          <div class="bbd-fast-skel" style="height:330px;border-radius:14px;background:#fff;border:1px solid #E2E8F0;"></div>
+          <div class="bbd-fast-skel" style="height:330px;border-radius:14px;background:#fff;border:1px solid #E2E8F0;"></div>
+          <div class="bbd-fast-skel" style="height:330px;border-radius:14px;background:#fff;border:1px solid #E2E8F0;"></div>
+          <div class="bbd-fast-skel" style="height:330px;border-radius:14px;background:#fff;border:1px solid #E2E8F0;"></div>
+        </div>
+      </main>
+    </div>
+  </body>
+</html>
