@@ -3,6 +3,30 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      (function () {
+        try {
+          window.__BOICHITRA_STOREFRONT_PREFETCH__ = window
+            .fetch('/api/storefront')
+            .then(function (r) {
+              return r.ok ? r.json() : null;
+            })
+            .catch(function () {
+              return null;
+            });
+          if (!localStorage.getItem('boichitra_cpanel_fast_v9')) {
+            window.__BOICHITRA_BUNDLE_PREFETCH__ = window
+              .fetch('/api/compiled-bundle')
+              .then(function (r) {
+                return r.ok ? r.json() : null;
+              })
+              .catch(function () {
+                return null;
+              });
+          }
+        } catch (_e) {}
+      })();
+    </script>
     <title>Boichitra BD — বৈচিত্র্য | Fashion, Gadget &amp; Everything</title>
     <meta
       name="description"
@@ -21,6 +45,8 @@
       name="twitter:description"
       content="বৈচিত্র্য মানে সবকিছু এক জায়গায়! শীতের হুডি থেকে গরমের স্মার্ট গ্যাজেট, ট্রেন্ডি সব প্রোডাক্ট পাবে সিলেট থেকে সারাদেশে।"
     />
+    <link rel="preconnect" href="https://esm.sh" crossorigin />
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -38,9 +64,17 @@
         background-color: #F3F5F7;
         color: #172126;
         overflow-x: hidden;
+        margin: 0;
       }
       .tabular-nums {
         font-variant-numeric: tabular-nums;
+      }
+      @keyframes bbdPulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.45; }
+      }
+      .bbd-skeleton {
+        animation: bbdPulse 1.2s ease-in-out infinite;
       }
       @media print {
         .no-print {
@@ -63,7 +97,6 @@
         }
       }
     </script>
-    <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.26.9/babel.min.js"></script>
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
@@ -84,20 +117,43 @@
   </head>
   <body class="bg-[#F3F5F7] text-[#172126] antialiased selection:bg-[#286F65] selection:text-white">
     <div id="root">
-      <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;background:#F3F5F7;color:#14213D;font-family:'Hind Siliguri',sans-serif;">
-        <div style="width:40px;height:40px;border:3px solid #cbd5e1;border-top-color:#14213D;border-radius:50%;animation:boichitraSpin 0.8s linear infinite;"></div>
-        <div style="font-size:15px;font-weight:600;">Boichitra BD — বৈচিত্র্য লোড হচ্ছে...</div>
-      </div>
-      <style>@keyframes boichitraSpin { to { transform: rotate(360deg); } }</style>
+      <!-- Instant First-Paint Shell (0ms render before JS hydration) -->
+      <header style="background:#ffffff;border-bottom:1px solid #e2e8f0;position:sticky;top:0;z-index:30;">
+        <div style="max-width:1360px;margin:0 auto;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;">
+          <div style="font-size:20px;font-weight:700;color:#14213D;">Boichitra BD — বৈচিত্র্য</div>
+          <div style="padding:8px 16px;background:#14213D;color:#ffffff;border-radius:8px;font-size:13px;font-weight:600;">শপিং ব্যাগ</div>
+        </div>
+      </header>
+      <main style="max-width:1360px;margin:24px auto;padding:0 20px;">
+        <div class="bbd-skeleton" style="height:260px;border-radius:16px;background:#14213D;margin-bottom:28px;display:flex;align-items:center;justify-content:center;color:#ffffff;font-size:18px;font-weight:600;">
+          বৈচিত্র্য স্টোর লোড হচ্ছে...
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px;">
+          <div class="bbd-skeleton" style="height:340px;border-radius:14px;background:#ffffff;border:1px solid #e2e8f0;"></div>
+          <div class="bbd-skeleton" style="height:340px;border-radius:14px;background:#ffffff;border:1px solid #e2e8f0;"></div>
+          <div class="bbd-skeleton" style="height:340px;border-radius:14px;background:#ffffff;border:1px solid #e2e8f0;"></div>
+        </div>
+      </main>
     </div>
     <script type="module">
       import React from 'react';
       import { createRoot } from 'react-dom/client';
 
-      const CACHE_KEY = 'boichitra_cpanel_compiled_v3';
+      const CACHE_KEY = 'boichitra_cpanel_fast_v9';
 
       function makeBlobUrl(jsCode) {
         return URL.createObjectURL(new Blob([jsCode], { type: 'text/javascript' }));
+      }
+
+      function loadBabelOnce() {
+        if (window.Babel) return Promise.resolve(window.Babel);
+        return new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = 'https://cdn.jsdelivr.net/npm/@babel/standalone@7.26.9/babel.min.js';
+          s.onload = () => resolve(window.Babel);
+          s.onerror = reject;
+          document.head.appendChild(s);
+        });
       }
 
       function compileTsx(source, filename) {
@@ -107,8 +163,19 @@
         }).code;
       }
 
+      const replaceImports = (code, map) => {
+        let out = code;
+        for (const [target, blobUrl] of Object.entries(map)) {
+          out = out.split("'" + target + "'").join("'" + blobUrl + "'");
+          out = out.split('"' + target + '"').join('"' + blobUrl + '"');
+        }
+        return out;
+      };
+
       async function bootBoichitra() {
         let compiled = null;
+
+        // 1. Check fast localStorage cache first (0ms)
         try {
           const cached = localStorage.getItem(CACHE_KEY);
           if (cached) {
@@ -116,33 +183,58 @@
           }
         } catch (_e) {}
 
+        // 2. Check server-side pre-compiled bundle cache (/api/compiled-bundle) — avoids loading 2.8MB Babel!
+        if (!compiled) {
+          try {
+            const prefetched = window.__BOICHITRA_BUNDLE_PREFETCH__
+              ? await window.__BOICHITRA_BUNDLE_PREFETCH__
+              : await fetch('/api/compiled-bundle').then((r) => (r.ok ? r.json() : null));
+            window.__BOICHITRA_BUNDLE_PREFETCH__ = null;
+            if (prefetched && prefetched.cached && prefetched.compiled && prefetched.compiled.app) {
+              compiled = prefetched.compiled;
+              try {
+                localStorage.setItem(CACHE_KEY, JSON.stringify(compiled));
+              } catch (_e) {}
+            }
+          } catch (_e) {}
+        }
+
+        // 3. Only if neither localStorage nor server has cached bundle yet, compile 4 storefront files & save to server
         if (!compiled) {
           const files = [
             '/src/lib/bd-locations.ts',
             '/src/lib/visuals.ts',
             '/src/components/ProductVisualCard.tsx',
-            '/src/components/AdminPanel.tsx',
             '/src/App.tsx',
           ];
-          const sources = await Promise.all(
-            files.map(async (url) => {
-              const res = await fetch(url + '?v=3');
-              if (!res.ok) throw new Error('Failed to load ' + url);
-              return res.text();
-            })
-          );
+          const [sources] = await Promise.all([
+            Promise.all(
+              files.map(async (url) => {
+                const res = await fetch(url + '?v=9');
+                if (!res.ok) throw new Error('Failed to load ' + url);
+                return res.text();
+              })
+            ),
+            loadBabelOnce(),
+          ]);
 
           compiled = {
             bdLocations: compileTsx(sources[0], 'bd-locations.ts'),
             visuals: compileTsx(sources[1], 'visuals.ts') + '\nexport const ParsedMediaItem = {};',
             productCard: compileTsx(sources[2], 'ProductVisualCard.tsx'),
-            adminPanel: compileTsx(sources[3], 'AdminPanel.tsx'),
-            app: compileTsx(sources[4], 'App.tsx'),
+            app: compileTsx(sources[3], 'App.tsx'),
           };
 
           try {
             localStorage.setItem(CACHE_KEY, JSON.stringify(compiled));
           } catch (_e) {}
+
+          // Save compiled bundle on server so all future visitors skip Babel completely!
+          fetch('/api/compiled-bundle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ compiled }),
+          }).catch(() => {});
         }
 
         const typesUrl = makeBlobUrl(
@@ -150,15 +242,6 @@
         );
         const bdLocationsUrl = makeBlobUrl(compiled.bdLocations);
         const visualsUrl = makeBlobUrl(compiled.visuals);
-
-        const replaceImports = (code, map) => {
-          let out = code;
-          for (const [target, blobUrl] of Object.entries(map)) {
-            out = out.split("'" + target + "'").join("'" + blobUrl + "'");
-            out = out.split('"' + target + '"').join('"' + blobUrl + '"');
-          }
-          return out;
-        };
 
         const productCardUrl = makeBlobUrl(
           replaceImports(compiled.productCard, {
@@ -168,14 +251,43 @@
           })
         );
 
-        const adminPanelUrl = makeBlobUrl(
-          replaceImports(compiled.adminPanel, {
-            '../types.ts': typesUrl,
-            '../lib/bd-locations.ts': bdLocationsUrl,
-            '../lib/visuals.ts': visualsUrl,
-            './ProductVisualCard.tsx': productCardUrl,
-          })
-        );
+        // Lazy on-demand loader for AdminPanel.tsx (only downloaded & compiled when visiting /admin)
+        window.__BOICHITRA_LOAD_ADMIN__ = async () => {
+          if (window.__BOICHITRA_ADMIN_MOD__) return window.__BOICHITRA_ADMIN_MOD__;
+          const [adminSrc] = await Promise.all([
+            fetch('/src/components/AdminPanel.tsx?v=9').then((r) => r.text()),
+            loadBabelOnce(),
+          ]);
+          const adminJs = compileTsx(adminSrc, 'AdminPanel.tsx');
+          const adminBlobUrl = makeBlobUrl(
+            replaceImports(adminJs, {
+              '../types.ts': typesUrl,
+              '../lib/bd-locations.ts': bdLocationsUrl,
+              '../lib/visuals.ts': visualsUrl,
+              './ProductVisualCard.tsx': productCardUrl,
+            })
+          );
+          window.__BOICHITRA_ADMIN_MOD__ = await import(adminBlobUrl);
+          return window.__BOICHITRA_ADMIN_MOD__;
+        };
+
+        const lazyAdminProxyUrl = makeBlobUrl(`
+          import React, { useEffect, useState } from 'react';
+          export function AdminPanel(props) {
+            const [Comp, setComp] = useState(null);
+            useEffect(() => {
+              window.__BOICHITRA_LOAD_ADMIN__().then((m) => setComp(() => m.AdminPanel));
+            }, []);
+            if (!Comp) {
+              return React.createElement(
+                'div',
+                { className: 'min-h-screen flex items-center justify-center bg-[#F3F5F7] text-[#14213D] font-semibold text-sm' },
+                'অ্যাডমিন প্যানেল প্রস্তুত হচ্ছে...'
+              );
+            }
+            return React.createElement(Comp, props);
+          }
+        `);
 
         const appUrl = makeBlobUrl(
           replaceImports(compiled.app, {
@@ -183,7 +295,7 @@
             './lib/bd-locations.ts': bdLocationsUrl,
             './lib/visuals.ts': visualsUrl,
             './components/ProductVisualCard.tsx': productCardUrl,
-            './components/AdminPanel.tsx': adminPanelUrl,
+            './components/AdminPanel.tsx': lazyAdminProxyUrl,
           })
         );
 

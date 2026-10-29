@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ShoppingBag, Eye, Play, Images } from 'lucide-react';
+import { ShoppingBag, Eye, Play, Images, Share2, Check } from 'lucide-react';
 import { Product, ProductVariant } from '../types.ts';
 import { formatBdt } from '../lib/bd-locations.ts';
 import {
@@ -8,6 +8,8 @@ import {
   extractDistinctColorsAndSizes,
   findBestMatchingVariant,
   getColorSwatchHex,
+  buildProductPromoUrl,
+  copyTextToClipboard,
 } from '../lib/visuals.ts';
 
 interface ProductImageProps {
@@ -53,6 +55,15 @@ export const ProductCard: React.FC<ProductCardProps> = ({
     parseProductGalleryAndOffer(product);
   const imageItems = allMediaWithPrimary.filter((m) => m.type === 'image');
   const [previewIdx, setPreviewIdx] = useState(0);
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  const handleCopyCardLink = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const url = buildProductPromoUrl(product);
+    await copyTextToClipboard(url);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2200);
+  };
 
   // Per-card separate Color & Size variant state
   const [cardVariantId, setCardVariantId] = useState<number | null>(() =>
@@ -162,17 +173,43 @@ export const ProductCard: React.FC<ProductCardProps> = ({
             </div>
           )}
 
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onSelect(product, selectedCardVariant);
-            }}
-            aria-label={`বিস্তারিত দেখুন: ${product.nameBn}`}
-            className="absolute bottom-3 right-3 p-2 bg-white/95 text-[#14213D] rounded-lg shadow-sm opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity hover:bg-[#14213D] hover:text-white"
-          >
-            <Eye className="w-4 h-4" />
-          </button>
+          <div className="absolute bottom-3 right-3 flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handleCopyCardLink}
+              title="প্রমোশন / পণ্যের লিংক কপি করুন"
+              aria-label={`লিংক কপি করুন: ${product.nameBn}`}
+              className={`px-2 py-1.5 rounded-lg shadow-sm text-[11px] font-semibold inline-flex items-center gap-1 transition-all ${
+                copiedLink
+                  ? 'bg-[#16A34A] text-white'
+                  : 'bg-white/95 text-[#14213D] hover:bg-[#14213D] hover:text-white'
+              }`}
+            >
+              {copiedLink ? (
+                <>
+                  <Check className="w-3.5 h-3.5" />
+                  <span>কপি হয়েছে!</span>
+                </>
+              ) : (
+                <>
+                  <Share2 className="w-3.5 h-3.5" />
+                  <span>লিংক</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect(product, selectedCardVariant);
+              }}
+              aria-label={`বিস্তারিত দেখুন: ${product.nameBn}`}
+              className="p-2 bg-white/95 text-[#14213D] rounded-lg shadow-sm hover:bg-[#14213D] hover:text-white transition-colors"
+            >
+              <Eye className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* Mini Image Switcher Bar when multiple images exist */}

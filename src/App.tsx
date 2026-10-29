@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import {
   ShoppingBag,
   Search,
@@ -55,11 +55,34 @@ import {
   extractDistinctColorsAndSizes,
   findBestMatchingVariant,
   getColorSwatchHex,
+  buildProductPromoUrl,
+  copyTextToClipboard,
 } from './lib/visuals.ts';
 import { ProductCard, ResilientProductImage } from './components/ProductVisualCard.tsx';
-import { AdminPanel } from './components/AdminPanel.tsx';
 
-const ITEMS_PER_PAGE = 6;
+const AdminPanel = React.lazy(() =>
+  import('./components/AdminPanel.tsx').then((m) => ({ default: m.AdminPanel }))
+);
+
+const ITEMS_PER_PAGE = 12;
+const STOREFRONT_CACHE_KEY = 'boichitra_storefront_fast_v4';
+
+function readCachedStorefront(): {
+  settings: StoreSettings | null;
+  categories: Category[];
+  products: Product[];
+  coupons: Coupon[];
+} | null {
+  try {
+    const raw = localStorage.getItem(STOREFRONT_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && Array.isArray(parsed.products) && parsed.products.length > 0) {
+      return parsed;
+    }
+  } catch (_e) {}
+  return null;
+}
 
 export default function App() {
   // Route state: 'store' or 'admin'
@@ -73,12 +96,22 @@ export default function App() {
     return 'store';
   });
 
-  // Storefront Server Data
-  const [settings, setSettings] = useState<StoreSettings | null>(null);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [coupons, setCoupons] = useState<Coupon[]>([]);
-  const [loading, setLoading] = useState(true);
+  const initialCache = useMemo(() => readCachedStorefront(), []);
+
+  // Storefront Server Data (hydrated immediately from cache if available)
+  const [settings, setSettings] = useState<StoreSettings | null>(
+    () => initialCache?.settings || null
+  );
+  const [categories, setCategories] = useState<Category[]>(
+    () => initialCache?.categories || []
+  );
+  const [products, setProducts] = useState<Product[]>(
+    () => initialCache?.products || []
+  );
+  const [coupons, setCoupons] = useState<Coupon[]>(
+    () => initialCache?.coupons || []
+  );
+  const [loading, setLoading] = useState<boolean>(() => !initialCache);
   const [loadError, setLoadError] = useState('');
 
   // Catalog Filters & Pagination
@@ -87,7 +120,7 @@ export default function App() {
   const [collectionTab, setCollectionTab] = useState<
     'all' | 'featured' | 'new' | 'bestseller' | 'offer' | 'seasonal'
   >('all');
-  const [maxPriceFilter, setMaxPriceFilter] = useState<number>(5000);
+  const [maxPriceFilter, setMaxPriceFilter] = useState<number>(15000);
   const [sortBy, setSortBy] = useState<'newest' | 'price-asc' | 'price-desc'>('newest');
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -97,6 +130,7 @@ export default function App() {
   const [pdpQuantity, setPdpQuantity] = useState(1);
   const [activeMediaIdx, setActiveMediaIdx] = useState(0);
   const [copiedCouponCode, setCopiedCouponCode] = useState<string | null>(null);
+  const [copiedPdpLinkType, setCopiedPdpLinkType] = useState<'product' | 'checkout' | null>(null);
   const [countdownNow, setCountdownNow] = useState(() => Date.now());
 
   // Shopping Cart (convenience state in browser; server revalidates all prices & stock on checkout)
@@ -150,20 +184,44 @@ export default function App() {
   const [policyModal, setPolicyModal] = useState<'return' | 'privacy' | null>(null);
 
   const loadStorefront = useCallback(async () => {
-    setLoading(true);
+    if (!readCachedStorefront()) {
+      setLoading(true);
+    }
     setLoadError('');
     try {
-      const res = await fetch('/api/storefront');
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'স্টোরের তথ্য লোড করতে সমস্যা হয়েছে।');
+      let data: any = null;
+      const win = window as any;
+      if (win.__BOICHITRA_STOREFRONT_PREFETCH__) {
+        const prefetched = win.__BOICHITRA_STOREFRONT_PREFETCH__;
+        win.__BOICHITRA_STOREFRONT_PREFETCH__ = null;
+        data = await prefetched;
+      }
+      if (!data || !Array.isArray(data.products)) {
+        const res = await fetch('/api/storefront');
+        data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'স্টোরের তথ্য লোড করতে সমস্যা হয়েছে।');
+        }
       }
       setSettings(data.settings);
       setCategories(data.categories || []);
       setProducts(data.products || []);
       setCoupons(data.coupons || []);
+      try {
+        localStorage.setItem(
+          STOREFRONT_CACHE_KEY,
+          JSON.stringify({
+            settings: data.settings,
+            categories: data.categories || [],
+            products: data.products || [],
+            coupons: data.coupons || [],
+          })
+        );
+      } catch (_e) {}
     } catch (err: any) {
-      setLoadError(err.message || 'সার্ভারের সাথে সংযোগ স্থাপন করা যায়নি।');
+      if (!readCachedStorefront()) {
+        setLoadError(err.message || 'সার্ভারের সাথে সংযোগ স্থাপন করা যায়নি।');
+      }
     } finally {
       setLoading(false);
     }
@@ -189,20 +247,46 @@ export default function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  // Auto-open product modal when visiting deep-link URL (?product=slug)
+  // Auto-open product modal (or direct checkout) when visiting deep-link URL (?product=slug or ?product=slug&checkout=1)
+  const deepLinkHandledRef = useRef<string>('');
   useEffect(() => {
     if (products.length === 0) return;
     const params = new URLSearchParams(window.location.search);
-    const productSlug = params.get('product');
-    if (productSlug && !activeProduct) {
+    const productParam = (params.get('product') || params.get('sku') || '').trim();
+    const isDirectCheckout = params.get('checkout') === '1' || params.get('buy') === '1';
+    const sig = `${productParam}|${isDirectCheckout ? '1' : '0'}`;
+    if (productParam && deepLinkHandledRef.current !== sig) {
+      const lower = productParam.toLowerCase();
       const matched = products.find(
-        (p) => p.slug === productSlug || p.sku.toLowerCase() === productSlug.toLowerCase()
+        (p) =>
+          p.slug.toLowerCase() === lower ||
+          p.sku.toLowerCase() === lower ||
+          String(p.id) === lower
       );
       if (matched) {
-        setActiveProduct(matched);
-        setSelectedVariant(matched.variants.length > 0 ? matched.variants[0] : null);
-        setPdpQuantity(1);
-        setActiveMediaIdx(0);
+        deepLinkHandledRef.current = sig;
+        const defaultVar = matched.variants.length > 0 ? matched.variants[0] : null;
+        if (isDirectCheckout) {
+          const key = `${matched.id}-${defaultVar ? defaultVar.id : 'std'}`;
+          setCart((prev) =>
+            prev.some((i) => i.key === key)
+              ? prev
+              : [...prev, { key, product: matched, variant: defaultVar, quantity: 1 }]
+          );
+          setCheckoutStep('checkout');
+          setIsCartOpen(true);
+          try {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('checkout');
+            url.searchParams.delete('buy');
+            window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+          } catch (_e) {}
+        } else {
+          setActiveProduct(matched);
+          setSelectedVariant(defaultVar);
+          setPdpQuantity(1);
+          setActiveMediaIdx(0);
+        }
       }
     }
   }, [products]);
@@ -339,6 +423,37 @@ export default function App() {
     );
     setPdpQuantity(1);
     setActiveMediaIdx(0);
+    setCopiedPdpLinkType(null);
+    try {
+      const slugOrSku = product.slug || product.sku;
+      if (slugOrSku) {
+        window.history.replaceState({}, '', `/?product=${encodeURIComponent(slugOrSku)}`);
+      }
+    } catch (_e) {}
+  };
+
+  const closeProductDetail = () => {
+    setActiveProduct(null);
+    try {
+      if (window.location.search.includes('product=')) {
+        window.history.replaceState({}, '', window.location.pathname || '/');
+      }
+    } catch (_e) {}
+  };
+
+  const handleCopyProductLink = async (product: Product, directCheckout = false) => {
+    const link = buildProductPromoUrl(product, { directCheckout });
+    await copyTextToClipboard(link);
+    setCopiedPdpLinkType(directCheckout ? 'checkout' : 'product');
+    setCartNotice(
+      directCheckout
+        ? `ডিরেক্ট অর্ডার প্রমোশন লিংক কপি হয়েছে: ${link}`
+        : `পণ্যের প্রমোশন লিংক কপি হয়েছে: ${link}`
+    );
+    setTimeout(() => {
+      setCopiedPdpLinkType(null);
+      setCartNotice(null);
+    }, 3500);
   };
 
   useEffect(() => {
@@ -612,13 +727,21 @@ export default function App() {
   // Render Admin Panel if route === 'admin'
   if (route === 'admin') {
     return (
-      <AdminPanel
-        onBackToStore={() => {
-          window.history.pushState({}, '', '/');
-          setRoute('store');
-        }}
-        onStoreUpdated={loadStorefront}
-      />
+      <React.Suspense
+        fallback={
+          <div className="min-h-screen flex items-center justify-center bg-[#F3F5F7] text-[#14213D] font-semibold text-sm">
+            অ্যাডমিন প্যানেল লোড হচ্ছে...
+          </div>
+        }
+      >
+        <AdminPanel
+          onBackToStore={() => {
+            window.history.pushState({}, '', '/');
+            setRoute('store');
+          }}
+          onStoreUpdated={loadStorefront}
+        />
+      </React.Suspense>
     );
   }
 
@@ -1183,7 +1306,7 @@ export default function App() {
                   id="priceRange"
                   type="range"
                   min={500}
-                  max={5000}
+                  max={15000}
                   step={100}
                   value={maxPriceFilter}
                   onChange={(e) => setMaxPriceFilter(Number(e.target.value))}
@@ -1242,7 +1365,7 @@ export default function App() {
                   setSelectedCategoryId('ALL');
                   setCollectionTab('all');
                   setSearchQuery('');
-                  setMaxPriceFilter(5000);
+                  setMaxPriceFilter(15000);
                 }}
                 className="px-4 py-2 bg-[#14213D] text-white text-xs font-semibold rounded-lg"
               >
@@ -1505,7 +1628,7 @@ export default function App() {
           <div className="bg-white rounded-2xl max-w-4xl w-full p-6 sm:p-8 shadow-2xl max-h-[92vh] overflow-y-auto relative">
             <button
               type="button"
-              onClick={() => setActiveProduct(null)}
+              onClick={closeProductDetail}
               aria-label="বন্ধ করুন"
               className="absolute top-4 right-4 p-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700"
             >
@@ -1978,7 +2101,7 @@ export default function App() {
                       disabled={activeProduct.stockQuantity <= 0}
                       onClick={() => {
                         addToCart(activeProduct, selectedVariant, pdpQuantity, false);
-                        setActiveProduct(null);
+                        closeProductDetail();
                       }}
                       className="py-3 px-4 rounded-xl border border-[#14213D] text-[#14213D] hover:bg-slate-100 font-semibold text-sm transition-colors"
                     >
@@ -1995,6 +2118,56 @@ export default function App() {
                     >
                       এখনই অর্ডার করুন (Buy Now)
                     </button>
+                  </div>
+
+                  {/* Direct Product Promotion & Share Link Box */}
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/90 space-y-2 mt-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-[#14213D]">
+                        🔗 প্রমোশন ও শেয়ার লিংক (Facebook Ads / Share Link):
+                      </span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleCopyProductLink(activeProduct, false)}
+                          className={`px-2.5 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 transition-colors ${
+                            copiedPdpLinkType === 'product'
+                              ? 'bg-[#16A34A] text-white'
+                              : 'bg-[#14213D] hover:bg-[#286F65] text-white'
+                          }`}
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>
+                            {copiedPdpLinkType === 'product'
+                              ? '✓ পণ্যের লিংক কপি হয়েছে!'
+                              : 'পণ্যের লিংক কপি করুন'}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyProductLink(activeProduct, true)}
+                          className={`px-2.5 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 transition-colors ${
+                            copiedPdpLinkType === 'checkout'
+                              ? 'bg-[#16A34A] text-white'
+                              : 'bg-[#286F65] hover:bg-[#14213D] text-white'
+                          }`}
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>
+                            {copiedPdpLinkType === 'checkout'
+                              ? '✓ ডিরেক্ট চেকআউট লিংক কপি!'
+                              : 'ডিরেক্ট অর্ডার অ্যাড লিংক'}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                    <input
+                      type="text"
+                      readOnly
+                      value={buildProductPromoUrl(activeProduct)}
+                      onClick={(e) => (e.target as HTMLInputElement).select()}
+                      className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg font-mono text-[11px] text-slate-600 select-all"
+                    />
                   </div>
                 </div>
               </div>

@@ -25,6 +25,9 @@ import {
   Sparkles,
   Trash2,
   Server,
+  Copy,
+  Share2,
+  Check,
 } from 'lucide-react';
 import {
   AuditLogRecord,
@@ -43,6 +46,8 @@ import {
   serializeProductGalleryAndOffer,
   compressImageFileToDataUrl,
   ParsedMediaItem,
+  buildProductPromoUrl,
+  copyTextToClipboard,
 } from '../lib/visuals.ts';
 import * as XLSX from 'xlsx';
 import { ResilientProductImage } from './ProductVisualCard.tsx';
@@ -273,11 +278,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     lastSyncAt: string | null;
     lastSyncDetails: string | null;
   } | null>(null);
-  const [bkMarkupPct, setBkMarkupPct] = useState<number>(25);
+  const [bkMarkupPct, setBkMarkupPct] = useState<number>(0);
   const [bkFixedMarkupBdt, setBkFixedMarkupBdt] = useState<number>(0);
   const [bkAutoPublish, setBkAutoPublish] = useState<boolean>(true);
   const [bkUpdateExistingPrices, setBkUpdateExistingPrices] = useState<boolean>(true);
   const [syncingBusinessKoro, setSyncingBusinessKoro] = useState<boolean>(false);
+
+  // Product Promo Link & Deletion States
+  const [copiedPromoKey, setCopiedPromoKey] = useState<string | null>(null);
+  const [confirmDeleteProductId, setConfirmDeleteProductId] = useState<number | null>(null);
+  const [deletingProductId, setDeletingProductId] = useState<number | null>(null);
+  const [selectedProductIds, setSelectedProductIds] = useState<number[]>([]);
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState<boolean>(false);
+  const [bulkDeleting, setBulkDeleting] = useState<boolean>(false);
 
   const getAuthHeaders = useCallback(
     (extra: Record<string, string> = {}) => {
@@ -1015,6 +1028,89 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       });
     } finally {
       setSavingProduct(false);
+    }
+  };
+
+  const handleCopyPromoLink = async (
+    product: { id?: number; slug?: string; sku?: string; nameBn?: string },
+    directCheckout = false
+  ) => {
+    const url = buildProductPromoUrl(product, { directCheckout });
+    await copyTextToClipboard(url);
+    const key = `${product.id || product.sku}-${directCheckout ? 'checkout' : 'view'}`;
+    setCopiedPromoKey(key);
+    setFeedbackBanner({
+      type: 'success',
+      text: directCheckout
+        ? `"${product.nameBn || product.sku}"-এর ডিরেক্ট চেকআউট প্রমোশন লিংক কপি হয়েছে: ${url}`
+        : `"${product.nameBn || product.sku}"-এর প্রমোশন লিংক কপি হয়েছে: ${url}`,
+    });
+    setTimeout(() => setCopiedPromoKey((prev) => (prev === key ? null : prev)), 2500);
+  };
+
+  const handleDeleteProduct = async (product: { id: number; nameBn: string; sku: string }) => {
+    setDeletingProductId(product.id);
+    try {
+      const res = await fetch(`/api/admin/products/${product.id}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders(),
+        credentials: 'include',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'পণ্যটি মুছে ফেলা যায়নি।');
+      }
+      setConfirmDeleteProductId(null);
+      setSelectedProductIds((prev) => prev.filter((id) => id !== product.id));
+      if (showProductModal && productForm.id === product.id) {
+        setShowProductModal(false);
+      }
+      setFeedbackBanner({
+        type: 'success',
+        text: `পণ্য "${product.nameBn}" (SKU: ${product.sku}) সফলভাবে ডিলিট করা হয়েছে।`,
+      });
+      await fetchAdminOverview();
+      onStoreUpdated();
+    } catch (err: any) {
+      setFeedbackBanner({
+        type: 'error',
+        text: err.message || 'পণ্যটি মুছে ফেলা যায়নি।',
+      });
+    } finally {
+      setDeletingProductId(null);
+    }
+  };
+
+  const handleBulkDeleteProducts = async () => {
+    if (selectedProductIds.length === 0) return;
+    setBulkDeleting(true);
+    try {
+      const res = await fetch('/api/admin/products/bulk-delete', {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'include',
+        body: JSON.stringify({ productIds: selectedProductIds }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'নির্বাচিত পণ্যগুলো মুছে ফেলা যায়নি।');
+      }
+      const count = data.deletedCount ?? selectedProductIds.length;
+      setSelectedProductIds([]);
+      setConfirmBulkDelete(false);
+      setFeedbackBanner({
+        type: 'success',
+        text: `মোট ${count}টি পণ্য সফলভাবে ডিলিট করা হয়েছে।`,
+      });
+      await fetchAdminOverview();
+      onStoreUpdated();
+    } catch (err: any) {
+      setFeedbackBanner({
+        type: 'error',
+        text: err.message || 'নির্বাচিত পণ্যগুলো মুছে ফেলা যায়নি।',
+      });
+    } finally {
+      setBulkDeleting(false);
     }
   };
 
@@ -2110,7 +2206,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2 border-t border-slate-100">
                 <div>
                   <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                    রিসেলার প্রফিট মার্জিন / মার্কআপ (%)
+                    অতিরিক্ত মার্কআপ (%) [০% = Suggested Price]
                   </label>
                   <input
                     type="number"
@@ -2121,7 +2217,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-[#286F65] font-semibold"
                   />
                   <span className="text-[10px] text-slate-500 mt-0.5 block">
-                    পাইকারি মূল্যের ওপর অতিরিক্ত শতকরা লাভ (যেমন: ২৫%)
+                    ০% রাখলে BusinessKoro-এর Suggested Price সরাসরি সেট হবে
                   </span>
                 </div>
 
@@ -2185,22 +2281,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
               <div className="text-[11px] text-slate-600 bg-slate-50 px-3.5 py-2 rounded-lg border border-slate-200/80 flex flex-wrap items-center justify-between gap-2">
                 <span>
-                  <strong>সার্ভার কনফিগারেশন নোট:</strong> লাইভ এপিআই কানেকশনের জন্য সার্ভারের{' '}
+                  <strong>অটো প্রোডাক্ট ও অর্ডার সিঙ্ক সক্রিয়:</strong> প্রোডাক্ট লিস্ট{' '}
                   <code className="font-mono bg-white px-1.5 py-0.5 rounded border border-slate-200 text-[#14213D]">
-                    .env
+                    GET /api/v1/storefront/products
                   </code>{' '}
-                  অথবা cPanel Environment-এ{' '}
+                  এবং কাস্টমার অর্ডার{' '}
                   <code className="font-mono bg-white px-1.5 py-0.5 rounded border border-slate-200 text-[#14213D]">
-                    BUSINESSKORO_API_KEY
+                    POST /api/v1/storefront/orders
                   </code>{' '}
-                  এবং{' '}
-                  <code className="font-mono bg-white px-1.5 py-0.5 rounded border border-slate-200 text-[#14213D]">
-                    BUSINESSKORO_API_URL
-                  </code>{' '}
-                  সেট করুন।
+                  স্বয়ংক্রিয়ভাবে সংযুক্ত।
                 </span>
                 <span className="font-mono text-[10px] text-slate-500">
-                  Endpoint: {bkStatus?.endpointUrl || 'https://businesskoro.com/api/v1/products'}
+                  Endpoint: {bkStatus?.endpointUrl || 'https://api.businesskoro.com/api/v1/storefront/products'}
                 </span>
               </div>
             </div>
@@ -2218,33 +2310,112 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 />
               </div>
 
-              <button
-                type="button"
-                onClick={openNewProductModal}
-                className="px-4 py-2.5 bg-[#14213D] hover:bg-[#286F65] text-white text-xs font-semibold rounded-lg flex items-center gap-2 whitespace-nowrap shrink-0"
-              >
-                <Plus className="w-4 h-4" />
-                <span>নতুন পণ্য যুক্ত করুন (Add Product)</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                {selectedProductIds.length > 0 && (
+                  <div className="flex items-center gap-1.5 bg-red-50 border border-red-200 px-3 py-1.5 rounded-lg">
+                    <span className="text-xs font-bold text-red-800">
+                      {selectedProductIds.length}টি নির্বাচিত
+                    </span>
+                    {confirmBulkDelete ? (
+                      <>
+                        <button
+                          type="button"
+                          disabled={bulkDeleting}
+                          onClick={handleBulkDeleteProducts}
+                          className="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-xs font-bold"
+                        >
+                          {bulkDeleting ? 'মুছে ফেলা হচ্ছে...' : 'হ্যাঁ, ডিলিট করুন'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmBulkDelete(false)}
+                          className="px-2 py-1 bg-white border border-slate-300 text-slate-700 rounded text-xs font-semibold"
+                        >
+                          না
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmBulkDelete(true)}
+                        className="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-xs font-bold inline-flex items-center gap-1"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>নির্বাচিত পণ্য ডিলিট করুন</span>
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={openNewProductModal}
+                  className="px-4 py-2.5 bg-[#14213D] hover:bg-[#286F65] text-white text-xs font-semibold rounded-lg flex items-center gap-2 whitespace-nowrap shrink-0"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>নতুন পণ্য যুক্ত করুন (Add Product)</span>
+                </button>
+              </div>
             </div>
 
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs tabular-nums">
                 <thead>
                   <tr className="border-b border-slate-200 text-slate-500">
+                    <th className="py-3 pr-2 w-8">
+                      <input
+                        type="checkbox"
+                        aria-label="সব পণ্য সিলেক্ট করুন"
+                        checked={
+                          filteredProducts.length > 0 &&
+                          filteredProducts.every((p) => selectedProductIds.includes(p.id))
+                        }
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedProductIds(filteredProducts.map((p) => p.id));
+                          } else {
+                            setSelectedProductIds([]);
+                            setConfirmBulkDelete(false);
+                          }
+                        }}
+                        className="rounded border-slate-300"
+                      />
+                    </th>
                     <th className="py-3 pr-3">পণ্য</th>
                     <th className="py-3 pr-3">SKU</th>
                     <th className="py-3 pr-3">মূল্য (Regular / Sale)</th>
                     <th className="py-3 pr-3">স্টক</th>
                     <th className="py-3 pr-3">স্ট্যাটাস</th>
-                    <th className="py-3 text-right">অ্যাকশন</th>
+                    <th className="py-3 text-right">প্রমোশন লিংক ও অ্যাকশন</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredProducts.map((p) => {
                     const parsedMedia = parseProductGalleryAndOffer(p);
+                    const isChecked = selectedProductIds.includes(p.id);
+                    const viewPromoKey = `${p.id}-view`;
+                    const checkoutPromoKey = `${p.id}-checkout`;
                     return (
-                      <tr key={p.id} className="hover:bg-slate-50">
+                      <tr key={p.id} className={isChecked ? 'bg-emerald-50/40' : 'hover:bg-slate-50'}>
+                        <td className="py-3 pr-2">
+                          <input
+                            type="checkbox"
+                            aria-label={`${p.nameBn} সিলেক্ট করুন`}
+                            checked={isChecked}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedProductIds((prev) =>
+                                  prev.includes(p.id) ? prev : [...prev, p.id]
+                                );
+                              } else {
+                                setSelectedProductIds((prev) =>
+                                  prev.filter((id) => id !== p.id)
+                                );
+                              }
+                            }}
+                            className="rounded border-slate-300"
+                          />
+                        </td>
                         <td className="py-3 pr-3 flex items-center gap-3">
                           <div className="w-12 h-10 rounded bg-slate-100 overflow-hidden shrink-0">
                             <ResilientProductImage
@@ -2301,14 +2472,88 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           )}
                         </td>
                         <td className="py-3 text-right">
-                          <button
-                            type="button"
-                            onClick={() => openEditProductModal(p)}
-                            className="px-3 py-1.5 bg-slate-100 hover:bg-[#14213D] hover:text-white rounded text-xs font-medium inline-flex items-center gap-1 transition-colors"
-                          >
-                            <Edit3 className="w-3 h-3" />
-                            <span>এডিট / ছবি-ভিডিও</span>
-                          </button>
+                          <div className="inline-flex flex-wrap items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleCopyPromoLink(p, false)}
+                              title="প্রমোশনের জন্য পণ্যের ডিরেক্ট লিংক কপি করুন"
+                              className={`px-2.5 py-1.5 rounded text-[11px] font-semibold inline-flex items-center gap-1 transition-colors ${
+                                copiedPromoKey === viewPromoKey
+                                  ? 'bg-[#16A34A] text-white'
+                                  : 'bg-emerald-50 hover:bg-[#286F65] text-[#006A4E] hover:text-white border border-emerald-200'
+                              }`}
+                            >
+                              {copiedPromoKey === viewPromoKey ? (
+                                <>
+                                  <Check className="w-3 h-3" />
+                                  <span>কপি হয়েছে!</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3 h-3" />
+                                  <span>প্রমো লিংক</span>
+                                </>
+                              )}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleCopyPromoLink(p, true)}
+                              title="ফেসবুক অ্যাডস ডিরেক্ট চেকআউট লিংক কপি করুন"
+                              className={`px-2.5 py-1.5 rounded text-[11px] font-semibold inline-flex items-center gap-1 transition-colors ${
+                                copiedPromoKey === checkoutPromoKey
+                                  ? 'bg-[#16A34A] text-white'
+                                  : 'bg-slate-100 hover:bg-[#14213D] text-[#14213D] hover:text-white'
+                              }`}
+                            >
+                              <Share2 className="w-3 h-3" />
+                              <span>
+                                {copiedPromoKey === checkoutPromoKey
+                                  ? 'চেকআউট লিংক কপি!'
+                                  : 'অ্যাড লিংক'}
+                              </span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => openEditProductModal(p)}
+                              className="px-2.5 py-1.5 bg-slate-100 hover:bg-[#14213D] hover:text-white rounded text-[11px] font-medium inline-flex items-center gap-1 transition-colors"
+                            >
+                              <Edit3 className="w-3 h-3" />
+                              <span>এডিট</span>
+                            </button>
+
+                            {confirmDeleteProductId === p.id ? (
+                              <div className="inline-flex items-center gap-1 bg-red-50 border border-red-200 px-2 py-1 rounded">
+                                <span className="text-[10px] font-bold text-red-700">মুছবেন?</span>
+                                <button
+                                  type="button"
+                                  disabled={deletingProductId === p.id}
+                                  onClick={() => handleDeleteProduct(p)}
+                                  className="px-2 py-0.5 bg-red-600 hover:bg-red-700 text-white rounded text-[10px] font-bold"
+                                >
+                                  {deletingProductId === p.id ? '...' : 'হ্যাঁ'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteProductId(null)}
+                                  className="px-1.5 py-0.5 bg-white border border-slate-300 text-slate-700 rounded text-[10px] font-semibold"
+                                >
+                                  না
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteProductId(p.id)}
+                                title="পণ্যটি ডিলিট করুন"
+                                className="px-2.5 py-1.5 bg-red-50 hover:bg-red-600 text-red-600 hover:text-white border border-red-200 rounded text-[11px] font-semibold inline-flex items-center gap-1 transition-colors"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                                <span>ডিলিট</span>
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );
@@ -2407,17 +2652,35 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </div>
                       </div>
 
-                      <div className="flex items-center justify-between pt-2 border-t border-slate-200/70 text-xs">
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/70 text-xs">
                         <span className="text-slate-500">
                           মিডিয়া: {parsed.imageCount} ছবি · {parsed.videoCount} ভিডিও
                         </span>
-                        <button
-                          type="button"
-                          onClick={() => openEditProductModal(p)}
-                          className="px-3 py-1.5 bg-[#14213D] hover:bg-[#286F65] text-white rounded-lg font-semibold text-xs"
-                        >
-                          অফার কাস্টমাইজ করুন
-                        </button>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleCopyPromoLink(p, false)}
+                            className="px-2.5 py-1.5 bg-emerald-50 hover:bg-[#286F65] text-[#006A4E] hover:text-white border border-emerald-200 rounded-lg font-semibold text-[11px] inline-flex items-center gap-1"
+                          >
+                            <Copy className="w-3 h-3" />
+                            <span>প্রমো লিংক</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openEditProductModal(p)}
+                            className="px-2.5 py-1.5 bg-[#14213D] hover:bg-[#286F65] text-white rounded-lg font-semibold text-[11px]"
+                          >
+                            কাস্টমাইজ
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteProduct(p)}
+                            title="পণ্যটি ডিলিট করুন"
+                            className="p-1.5 bg-red-50 hover:bg-red-600 text-red-600 hover:text-white border border-red-200 rounded-lg"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
@@ -3694,6 +3957,64 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </button>
             </div>
 
+            {productForm.id && (
+              <div className="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200 space-y-2 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-bold text-[#14213D]">
+                    🔗 প্রমোশনাল লিংক (Facebook / Meta Ads &amp; Direct Order Link):
+                  </span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleCopyPromoLink(
+                          products.find((p) => p.id === productForm.id) || {
+                            id: productForm.id,
+                            sku: productForm.sku,
+                            nameBn: productForm.nameBn,
+                          },
+                          false
+                        )
+                      }
+                      className="px-2.5 py-1.5 bg-[#14213D] hover:bg-[#286F65] text-white rounded-lg font-bold inline-flex items-center gap-1"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>পণ্যের লিংক কপি</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleCopyPromoLink(
+                          products.find((p) => p.id === productForm.id) || {
+                            id: productForm.id,
+                            sku: productForm.sku,
+                            nameBn: productForm.nameBn,
+                          },
+                          true
+                        )
+                      }
+                      className="px-2.5 py-1.5 bg-[#286F65] hover:bg-[#14213D] text-white rounded-lg font-bold inline-flex items-center gap-1"
+                    >
+                      <Share2 className="w-3.5 h-3.5" />
+                      <span>ডিরেক্ট চেকআউট অ্যাড লিংক</span>
+                    </button>
+                  </div>
+                </div>
+                <input
+                  type="text"
+                  readOnly
+                  value={buildProductPromoUrl(
+                    products.find((p) => p.id === productForm.id) || {
+                      id: productForm.id,
+                      sku: productForm.sku,
+                    }
+                  )}
+                  onClick={(e) => (e.target as HTMLInputElement).select()}
+                  className="w-full px-2.5 py-1.5 bg-white border border-emerald-200 rounded-lg font-mono text-[11px] text-slate-700 select-all"
+                />
+              </div>
+            )}
+
             <form onSubmit={handleSaveProduct} className="space-y-4 text-xs">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
@@ -4562,21 +4883,46 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
               )}
 
-              <div className="flex justify-end gap-2 pt-3 border-t border-slate-200">
-                <button
-                  type="button"
-                  onClick={() => setShowProductModal(false)}
-                  className="px-4 py-2 bg-slate-100 rounded-lg font-medium"
-                >
-                  বাতিল
-                </button>
-                <button
-                  type="submit"
-                  disabled={savingProduct}
-                  className="px-5 py-2 bg-[#14213D] hover:bg-[#286F65] text-white font-semibold rounded-lg"
-                >
-                  {savingProduct ? 'সংরক্ষণ হচ্ছে...' : 'পণ্য সংরক্ষণ করুন'}
-                </button>
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-200">
+                <div>
+                  {productForm.id && (
+                    <button
+                      type="button"
+                      disabled={deletingProductId === productForm.id}
+                      onClick={() =>
+                        handleDeleteProduct({
+                          id: productForm.id!,
+                          nameBn: productForm.nameBn,
+                          sku: productForm.sku,
+                        })
+                      }
+                      className="px-3.5 py-2 bg-red-50 hover:bg-red-600 text-red-600 hover:text-white border border-red-200 rounded-lg font-semibold inline-flex items-center gap-1.5 transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>
+                        {deletingProductId === productForm.id
+                          ? 'ডিলিট হচ্ছে...'
+                          : 'পণ্যটি স্থায়ীভাবে ডিলিট করুন'}
+                      </span>
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowProductModal(false)}
+                    className="px-4 py-2 bg-slate-100 rounded-lg font-medium"
+                  >
+                    বাতিল
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingProduct}
+                    className="px-5 py-2 bg-[#14213D] hover:bg-[#286F65] text-white font-semibold rounded-lg"
+                  >
+                    {savingProduct ? 'সংরক্ষণ হচ্ছে...' : 'পণ্য সংরক্ষণ করুন'}
+                  </button>
+                </div>
               </div>
             </form>
           </div>

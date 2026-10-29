@@ -27,6 +27,10 @@ if (!file_exists($htaccessGuard)) {
 
 $dbFile = $storageDir . '/store.sqlite';
 
+if (!headers_sent() && extension_loaded('zlib') && !ini_get('zlib.output_compression')) {
+  @ob_start('ob_gzhandler');
+}
+
 function sendJson($data, int $status = 200): void {
   http_response_code($status);
   header('Content-Type: application/json; charset=utf-8');
@@ -40,6 +44,7 @@ try {
   $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
   $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
   $pdo->exec('PRAGMA journal_mode = WAL;');
+  $pdo->exec('PRAGMA synchronous = NORMAL;');
   $pdo->exec('PRAGMA foreign_keys = ON;');
 } catch (Throwable $e) {
   sendJson(['error' => 'PHP SQLite ডেটাবেস ইনিশিয়ালাইজ করা যায়নি: ' . $e->getMessage()], 500);
@@ -48,7 +53,11 @@ try {
 // ============================================================================
 // 1. AUTO-CREATE TABLES & SEED INITIAL STORE DATA
 // ============================================================================
-function initializeDatabase(PDO $pdo): void {
+function initializeDatabase(PDO $pdo, string $storageDir, string $dbFile): void {
+  $schemaMarker = $storageDir . '/.schema_ready_v2';
+  if (file_exists($schemaMarker) && file_exists($dbFile) && @filesize($dbFile) > 4096) {
+    return;
+  }
   $pdo->exec("
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -226,6 +235,7 @@ function initializeDatabase(PDO $pdo): void {
 
   $countSettings = (int)$pdo->query("SELECT COUNT(*) FROM store_settings")->fetchColumn();
   if ($countSettings > 0) {
+    @file_put_contents($schemaMarker, '1');
     return;
   }
 
@@ -478,9 +488,10 @@ function initializeDatabase(PDO $pdo): void {
       $stmtVar->execute([$prodIdsBySku[$dv[0]], $dv[1], $dv[2], $dv[3], $dv[4], $dv[5]]);
     }
   }
+  @file_put_contents($schemaMarker, '1');
 }
 
-initializeDatabase($pdo);
+initializeDatabase($pdo, $storageDir, $dbFile);
 
 // ============================================================================
 // 2. HELPER FUNCTIONS (Settings, Bangla QR, Phone, Password Hashing)
@@ -823,6 +834,61 @@ $rawInput = file_get_contents('php://input');
 $body = json_decode($rawInput ?: '{}', true);
 if (!is_array($body)) $body = [];
 
+$storefrontCacheFile = $storageDir . '/storefront_fast_cache.json';
+if ($method !== 'GET' && $requestUri !== '/api/compiled-bundle') {
+  @unlink($storefrontCacheFile);
+}
+
+// Server-side pre-compiled storefront JS bundle cache (avoids 2.8MB Babel download for visitors)
+if ($requestUri === '/api/compiled-bundle') {
+  $srcFiles = [
+    __DIR__ . '/src/lib/bd-locations.ts',
+    __DIR__ . '/src/lib/visuals.ts',
+    __DIR__ . '/src/components/ProductVisualCard.tsx',
+    __DIR__ . '/src/App.tsx',
+  ];
+  $sigParts = ['v9'];
+  foreach ($srcFiles as $sf) {
+    $sigParts[] = @filemtime($sf) . ':' . @filesize($sf);
+  }
+  $bundleHash = substr(md5(implode('|', $sigParts)), 0, 16);
+  $bundleCachePath = $storageDir . '/compiled_storefront_' . $bundleHash . '.json';
+
+  if ($method === 'GET') {
+    if (file_exists($bundleCachePath)) {
+      http_response_code(200);
+      header('Content-Type: application/json; charset=utf-8');
+      header('Cache-Control: public, max-age=3600');
+      readfile($bundleCachePath);
+      exit;
+    }
+    sendJson(['cached' => false, 'hash' => $bundleHash]);
+  }
+
+  if ($method === 'POST') {
+    if (
+      !empty($body['compiled']) &&
+      is_array($body['compiled']) &&
+      !empty($body['compiled']['app']) &&
+      !empty($body['compiled']['bdLocations'])
+    ) {
+      $payload = json_encode([
+        'cached' => true,
+        'hash' => $bundleHash,
+        'compiled' => [
+          'bdLocations' => (string)$body['compiled']['bdLocations'],
+          'visuals' => (string)($body['compiled']['visuals'] ?? ''),
+          'productCard' => (string)($body['compiled']['productCard'] ?? ''),
+          'app' => (string)$body['compiled']['app'],
+        ],
+      ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+      @file_put_contents($bundleCachePath, $payload);
+      sendJson(['saved' => true, 'hash' => $bundleHash]);
+    }
+    sendJson(['saved' => false], 400);
+  }
+}
+
 // Health check
 if ($requestUri === '/api/health') {
   sendJson([
@@ -986,6 +1052,22 @@ if ($requestUri === '/api/admin/auth/change-password' && $method === 'POST') {
 // PUBLIC STOREFRONT & CHECKOUT ROUTES
 // ============================================================================
 if ($requestUri === '/api/storefront' && $method === 'GET') {
+  $bkrAutoSyncMarker = $storageDir . '/.bkr_auto_synced_v2';
+  if (!file_exists($bkrAutoSyncMarker)) {
+    try {
+      runBusinessKoroCatalogSync($pdo, $storageDir, 'system@boichitrabd.com', 'system', 0, 0, 1, true);
+      @unlink($storefrontCacheFile);
+    } catch (Throwable $_syncErr) {}
+  }
+
+  if (file_exists($storefrontCacheFile) && (time() - @filemtime($storefrontCacheFile) < 300)) {
+    http_response_code(200);
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-cache');
+    readfile($storefrontCacheFile);
+    exit;
+  }
+
   $settingsRow = $pdo->query("SELECT * FROM store_settings LIMIT 1")->fetch();
   $catRows = $pdo->query("SELECT * FROM categories ORDER BY sort_order ASC, id ASC")->fetchAll();
   $prodRows = $pdo->query("SELECT * FROM products ORDER BY id DESC")->fetchAll();
@@ -1022,12 +1104,20 @@ if ($requestUri === '/api/storefront' && $method === 'GET') {
     }
   }
 
-  sendJson([
+  $responsePayload = [
     'settings' => formatSettingsRow($settingsRow),
     'categories' => $activeCategories,
     'products' => $publishedProducts,
     'coupons' => $activeCoupons,
-  ]);
+  ];
+  $encodedPayload = json_encode($responsePayload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+  @file_put_contents($storefrontCacheFile, $encodedPayload);
+
+  http_response_code(200);
+  header('Content-Type: application/json; charset=utf-8');
+  header('Cache-Control: no-cache');
+  echo $encodedPayload;
+  exit;
 }
 
 if ($requestUri === '/api/coupons/validate' && $method === 'POST') {
@@ -1313,6 +1403,21 @@ if ($requestUri === '/api/orders/checkout' && $method === 'POST') {
 
     $pdo->commit();
 
+    // Forward order items to BusinessKoro Storefront Orders API
+    try {
+      forwardOrderToBusinessKoroPhp(
+        $pdo,
+        $orderNumber,
+        $verifiedItems,
+        $fullName,
+        $normalizedPhone,
+        $district,
+        $upazila,
+        $addressLine,
+        $orderNote
+      );
+    } catch (Throwable $_bkrErr) {}
+
     sendJson([
       'order' => [
         'id' => $orderId,
@@ -1589,6 +1694,19 @@ if ($requestUri === '/api/admin/products' && $method === 'POST') {
   $slug = trim($slugBase, '-') . '-' . strtolower(preg_replace('/[^a-z0-9]+/i', '', $sku));
 
   if ($id) {
+    $stmtOrig = $pdo->prepare("SELECT gallery_urls_json FROM products WHERE id = ? LIMIT 1");
+    $stmtOrig->execute([$id]);
+    $origRow = $stmtOrig->fetch();
+    if ($origRow && !empty($origRow['gallery_urls_json'])) {
+      $origParsed = json_decode((string)$origRow['gallery_urls_json'], true);
+      $newParsed = json_decode($galleryUrlsJson, true);
+      if (is_array($origParsed) && !empty($origParsed['bkrProductId']) && is_array($newParsed)) {
+        $newParsed['bkrProductId'] = $origParsed['bkrProductId'];
+        $newParsed['bkrMinPrice'] = $origParsed['bkrMinPrice'] ?? $origParsed['bkrMinimumSellingPrice'] ?? 0;
+        $newParsed['bkrCostPrice'] = $origParsed['bkrCostPrice'] ?? 0;
+        $galleryUrlsJson = json_encode($newParsed, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+      }
+    }
     $pdo->prepare("UPDATE products SET sku = ?, name = ?, name_bn = ?, category_id = ?, description = ?, description_bn = ?, price_bdt = ?, sale_price_bdt = ?, stock_quantity = ?, low_stock_threshold = ?, image_url = ?, gallery_urls_json = ?, is_featured = ?, is_new_arrival = ?, is_best_seller = ?, is_special_offer = ?, is_seasonal = ?, is_published = ?, seo_title = ?, seo_description = ?, updated_at = ? WHERE id = ?")
         ->execute([$sku, $name, $nameBn, $categoryId, $description, $descriptionBn, $priceBdt, $salePriceBdt, $stockQuantity, $lowStockThreshold, $imageUrl, $galleryUrlsJson, $isFeatured, $isNewArrival, $isBestSeller, $isSpecialOffer, $isSeasonal, $isPublished, $seoTitle, $seoDescription, $now, $id]);
   } else {
@@ -1643,7 +1761,49 @@ if ($requestUri === '/api/admin/products' && $method === 'POST') {
   $pdo->prepare("INSERT INTO audit_logs (actor_email, actor_uid, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'SAVE_PRODUCT', 'Product', ?, ?, ?)")
       ->execute([$admin['email'], $admin['uid'], $sku, "Saved product {$nameBn}", $now]);
 
+  @unlink($storageDir . '/storefront_cache_v1.json');
   sendJson(['product' => ['id' => $id, 'sku' => $sku]]);
+}
+
+if (preg_match('#^/api/admin/products/(\d+)$#', $requestUri, $m) && $method === 'DELETE') {
+  $admin = requireAdmin($pdo);
+  $prodId = (int)$m[1];
+  $stmtP = $pdo->prepare("SELECT * FROM products WHERE id = ? LIMIT 1");
+  $stmtP->execute([$prodId]);
+  $target = $stmtP->fetch();
+  if (!$target) {
+    sendJson(['error' => 'পণ্যটি খুঁজে পাওয়া যায়নি।'], 404);
+  }
+  $now = gmdate('Y-m-d\TH:i:s\Z');
+  $pdo->prepare("DELETE FROM product_variants WHERE product_id = ?")->execute([$prodId]);
+  $pdo->prepare("DELETE FROM products WHERE id = ?")->execute([$prodId]);
+  $pdo->prepare("INSERT INTO audit_logs (actor_email, actor_uid, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'DELETE_PRODUCT', 'Product', ?, ?, ?)")
+      ->execute([$admin['email'], $admin['uid'], $target['sku'], "Deleted product {$target['name_bn']}", $now]);
+  @unlink($storageDir . '/storefront_cache_v1.json');
+  sendJson(['deleted' => true, 'sku' => $target['sku'], 'nameBn' => $target['name_bn']]);
+}
+
+if ($requestUri === '/api/admin/products/bulk-delete' && $method === 'POST') {
+  $admin = requireAdmin($pdo);
+  $ids = is_array($body['productIds'] ?? null) ? $body['productIds'] : [];
+  $now = gmdate('Y-m-d\TH:i:s\Z');
+  $deletedCount = 0;
+  foreach ($ids as $rawId) {
+    $prodId = (int)$rawId;
+    if ($prodId <= 0) continue;
+    $stmtP = $pdo->prepare("SELECT * FROM products WHERE id = ? LIMIT 1");
+    $stmtP->execute([$prodId]);
+    $target = $stmtP->fetch();
+    if ($target) {
+      $pdo->prepare("DELETE FROM product_variants WHERE product_id = ?")->execute([$prodId]);
+      $pdo->prepare("DELETE FROM products WHERE id = ?")->execute([$prodId]);
+      $pdo->prepare("INSERT INTO audit_logs (actor_email, actor_uid, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'DELETE_PRODUCT', 'Product', ?, ?, ?)")
+          ->execute([$admin['email'], $admin['uid'], $target['sku'], "Deleted product {$target['name_bn']}", $now]);
+      $deletedCount++;
+    }
+  }
+  @unlink($storageDir . '/storefront_cache_v1.json');
+  sendJson(['deleted' => true, 'deletedCount' => $deletedCount]);
 }
 
 if ($requestUri === '/api/admin/coupons' && $method === 'POST') {
@@ -1777,72 +1937,231 @@ if ($requestUri === '/api/admin/settings' && $method === 'PUT') {
   sendJson(['settings' => formatSettingsRow($row)]);
 }
 
-if ($requestUri === '/api/admin/businesskoro/status' && $method === 'GET') {
-  requireAdmin($pdo);
-  $rawKey = trim((string)(getenv('BUSINESSKORO_API_KEY') ?: ($_ENV['BUSINESSKORO_API_KEY'] ?? '')));
-  $hasKey = strlen($rawKey) > 4 && $rawKey !== 'your_businesskoro_reseller_api_key';
-  $endpointUrl = trim((string)(getenv('BUSINESSKORO_API_URL') ?: ($_ENV['BUSINESSKORO_API_URL'] ?? ''))) ?: 'https://businesskoro.com/api/v1/products';
+function getBusinessKoroPhpConfig(): array {
+  $defaultKey = 'bkr_d00b18119bbae3dcbe10312bfe949196dd0c0c1909e551ec';
+  $envKey = trim((string)(getenv('BUSINESSKORO_API_KEY') ?: ($_ENV['BUSINESSKORO_API_KEY'] ?? '')));
+  $apiKey = (strlen($envKey) > 4 && $envKey !== 'your_businesskoro_reseller_api_key') ? $envKey : $defaultKey;
 
-  $syncedCount = (int)$pdo->query("SELECT COUNT(*) FROM products WHERE UPPER(sku) LIKE 'BBD-BK-%'")->fetchColumn();
-  $lastLog = $pdo->query("SELECT * FROM audit_logs WHERE action = 'BUSINESSKORO_SYNC' ORDER BY id DESC LIMIT 1")->fetch();
-
-  sendJson([
-    'hasServerApiKey' => $hasKey,
-    'endpointUrl' => $endpointUrl,
-    'syncedProductsCount' => $syncedCount,
-    'catalogFeedAvailableCount' => 6,
-    'lastSyncAt' => $lastLog['created_at'] ?? null,
-    'lastSyncDetails' => $lastLog['details'] ?? null,
-  ]);
+  $defaultProductsUrl = 'https://api.businesskoro.com/api/v1/storefront/products';
+  $envUrl = trim((string)(getenv('BUSINESSKORO_API_URL') ?: ($_ENV['BUSINESSKORO_API_URL'] ?? '')));
+  $productsUrl = $defaultProductsUrl;
+  if ($envUrl !== '' && $envUrl !== 'https://businesskoro.com/api/v1/products') {
+    $productsUrl = preg_match('#/storefront/?$#', $envUrl) ? (rtrim($envUrl, '/') . '/products') : $envUrl;
+  }
+  $ordersUrl = preg_replace('#/products/?$#', '/orders', $productsUrl);
+  return [
+    'apiKey' => $apiKey,
+    'productsUrl' => $productsUrl,
+    'ordersUrl' => $ordersUrl,
+    'domain' => 'boichitrabd.com',
+  ];
 }
 
-if ($requestUri === '/api/admin/businesskoro/sync' && $method === 'POST') {
-  $admin = requireAdmin($pdo);
-  $markupPct = max(0, min(300, (int)($body['markupPercentage'] ?? 25)));
-  $fixedMarkup = max(0, (int)($body['fixedMarkupBdt'] ?? 0));
-  $autoPublish = ($body['autoPublish'] ?? true) !== false ? 1 : 0;
-  $updateExistingPrices = ($body['updateExistingPrices'] ?? true) !== false;
+function bkrHttpRequest(string $url, string $method = 'GET', ?array $jsonBody = null): array {
+  $cfg = getBusinessKoroPhpConfig();
+  $apiKey = $cfg['apiKey'];
+  $domain = $cfg['domain'];
+  $headers = [
+    "Authorization: Bearer {$apiKey}",
+    "x-api-key: {$apiKey}",
+    "Origin: https://{$domain}",
+    "Referer: https://{$domain}/",
+    "x-domain: {$domain}",
+    "Accept: application/json",
+    "Content-Type: application/json",
+    "User-Agent: BoichitraBD-Storefront/1.0",
+  ];
+  $payloadStr = $jsonBody !== null ? json_encode($jsonBody, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null;
+
+  if (function_exists('curl_init')) {
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 12);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    if ($method === 'POST') {
+      curl_setopt($ch, CURLOPT_POST, true);
+      if ($payloadStr !== null) {
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $payloadStr);
+      }
+    }
+    $resp = curl_exec($ch);
+    $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return ['status' => $status, 'body' => is_string($resp) ? $resp : ''];
+  }
+
+  $httpOpts = [
+    'method' => $method,
+    'timeout' => 12,
+    'ignore_errors' => true,
+    'header' => implode("\r\n", $headers) . "\r\n",
+  ];
+  if ($payloadStr !== null) {
+    $httpOpts['content'] = $payloadStr;
+  }
+  $ctx = stream_context_create(['http' => $httpOpts]);
+  $resp = @file_get_contents($url, false, $ctx);
+  $status = 200;
+  if (!empty($http_response_header[0]) && preg_match('#HTTP/\S+\s+(\d+)#', $http_response_header[0], $m)) {
+    $status = (int)$m[1];
+  }
+  return ['status' => $status, 'body' => is_string($resp) ? $resp : ''];
+}
+
+function mapBusinessKoroPhpCategory(string $rawCat): array {
+  $lower = strtolower(trim($rawCat));
+  if (strpos($lower, 'fashion') !== false || strpos($lower, 'apparel') !== false || strpos($lower, 'hoodie') !== false) {
+    return ['slug' => 'fashion-item', 'name' => 'Fashion & Apparel', 'nameBn' => 'ফ্যাশন ও পোশাক'];
+  }
+  if (strpos($lower, 'gaming') !== false || strpos($lower, 'game') !== false) {
+    return ['slug' => 'gaming-item', 'name' => 'Gaming Gear', 'nameBn' => 'গেমিং আইটেম'];
+  }
+  if (strpos($lower, 'decor') !== false || strpos($lower, 'home') !== false) {
+    return ['slug' => 'decorating-item', 'name' => 'Home & Decor', 'nameBn' => 'হোম ও ডেকোরেশন'];
+  }
+  if (strpos($lower, 'gadget') !== false || strpos($lower, 'tech') !== false) {
+    return ['slug' => 'smart-gadgets', 'name' => 'Smart Gadgets', 'nameBn' => 'স্মার্ট গ্যাজেট'];
+  }
+  $slug = trim(preg_replace('/[^a-z0-9]+/', '-', $lower), '-') ?: 'smart-gadgets';
+  return ['slug' => $slug, 'name' => trim($rawCat) ?: 'Smart Gadgets', 'nameBn' => trim($rawCat) ?: 'স্মার্ট গ্যাজেট'];
+}
+
+function resolveBdDivisionPhp(string $district): string {
+  $d = strtolower(trim($district));
+  $map = [
+    'sylhet' => 'Sylhet', 'moulvibazar' => 'Sylhet', 'habiganj' => 'Sylhet', 'sunamganj' => 'Sylhet',
+    'chattogram' => 'Chattogram', 'chittagong' => 'Chattogram', 'comilla' => 'Chattogram', 'cumilla' => 'Chattogram', 'feni' => 'Chattogram', 'noakhali' => 'Chattogram', 'cox\'s bazar' => 'Chattogram', 'brahmanbaria' => 'Chattogram', 'chandpur' => 'Chattogram', 'lakshmipur' => 'Chattogram',
+    'rajshahi' => 'Rajshahi', 'bogura' => 'Rajshahi', 'bogra' => 'Rajshahi', 'pabna' => 'Rajshahi', 'sirajganj' => 'Rajshahi', 'natore' => 'Rajshahi', 'naogaon' => 'Rajshahi',
+    'khulna' => 'Khulna', 'jashore' => 'Khulna', 'jessore' => 'Khulna', 'kushtia' => 'Khulna', 'satkhira' => 'Khulna', 'bagerhat' => 'Khulna',
+    'barishal' => 'Barishal', 'barisal' => 'Barishal', 'bhola' => 'Barishal', 'patuakhali' => 'Barishal', 'pirojpur' => 'Barishal',
+    'rangpur' => 'Rangpur', 'dinajpur' => 'Rangpur', 'kurigram' => 'Rangpur', 'gaibandha' => 'Rangpur', 'nilphamari' => 'Rangpur', 'thakurgaon' => 'Rangpur', 'panchagarh' => 'Rangpur', 'lalmonirhat' => 'Rangpur',
+    'mymensingh' => 'Mymensingh', 'jamalpur' => 'Mymensingh', 'netrokona' => 'Mymensingh', 'sherpur' => 'Mymensingh',
+  ];
+  return $map[$d] ?? 'Dhaka';
+}
+
+function forwardOrderToBusinessKoroPhp(
+  PDO $pdo,
+  string $orderNumber,
+  array $verifiedItems,
+  string $fullName,
+  string $normalizedPhone,
+  string $district,
+  string $upazila,
+  string $addressLine,
+  string $orderNote
+): void {
+  $cfg = getBusinessKoroPhpConfig();
+  $division = resolveBdDivisionPhp($district);
+  $cleanDistrict = mb_substr(trim($district) ?: 'Dhaka', 0, 100);
+  $areaParts = explode('(', $upazila);
+  $cleanArea = mb_substr(trim($areaParts[0]) ?: $cleanDistrict, 0, 100);
   $now = gmdate('Y-m-d\TH:i:s\Z');
 
-  $rawKey = trim((string)(getenv('BUSINESSKORO_API_KEY') ?: ($_ENV['BUSINESSKORO_API_KEY'] ?? '')));
-  $hasKey = strlen($rawKey) > 4 && $rawKey !== 'your_businesskoro_reseller_api_key';
-  $endpointUrl = trim((string)(getenv('BUSINESSKORO_API_URL') ?: ($_ENV['BUSINESSKORO_API_URL'] ?? ''))) ?: 'https://businesskoro.com/api/v1/products';
+  foreach ($verifiedItems as $vi) {
+    $prod = $vi['product'];
+    $qty = (int)$vi['quantity'];
+    $galleryRaw = (string)($prod['gallery_urls_json'] ?? '');
+    $galleryArr = json_decode($galleryRaw, true);
+    $bkrProductId = is_array($galleryArr) ? trim((string)($galleryArr['bkrProductId'] ?? '')) : '';
+    $bkrMinPrice = is_array($galleryArr) ? (int)($galleryArr['bkrMinPrice'] ?? 0) : 0;
+
+    if ($bkrProductId === '') continue;
+
+    $sellingPrice = max(1, $bkrMinPrice * $qty, (int)$vi['lineTotalBdt']);
+    $noteParts = array_filter([
+      "Order: {$orderNumber}",
+      $vi['variantLabel'] !== 'Standard' ? "Variant: {$vi['variantLabel']}" : '',
+      $qty > 1 ? "Qty: {$qty}" : '',
+      $orderNote,
+    ]);
+
+    $payload = [
+      'productId' => $bkrProductId,
+      'customerName' => mb_substr($fullName, 0, 120),
+      'customerPhone' => $normalizedPhone,
+      'customerAddress' => mb_substr("{$addressLine}, {$upazila}, {$district}", 0, 500),
+      'customerDivision' => $division,
+      'customerDistrict' => $cleanDistrict,
+      'customerArea' => $cleanArea,
+      'sellingPrice' => $sellingPrice,
+      'deliveryChargePaidByCustomer' => true,
+      'customerNote' => mb_substr(implode(' | ', $noteParts), 0, 500),
+    ];
+
+    $resp = bkrHttpRequest($cfg['ordersUrl'], 'POST', $payload);
+    $shortBody = mb_substr($resp['body'], 0, 220);
+    $pdo->prepare("INSERT INTO audit_logs (actor_email, actor_uid, action, entity_type, entity_id, details, created_at) VALUES ('system@boichitrabd.com', 'system', 'BUSINESSKORO_ORDER_PUSH', 'Order', ?, ?, ?)")
+        ->execute([$orderNumber, "Product {$bkrProductId} -> HTTP {$resp['status']}: {$shortBody}", $now]);
+  }
+}
+
+function runBusinessKoroCatalogSync(
+  PDO $pdo,
+  string $storageDir,
+  string $actorEmail,
+  string $actorUid,
+  int $markupPct = 0,
+  int $fixedMarkup = 0,
+  int $autoPublish = 1,
+  bool $updateExistingPrices = true
+): array {
+  $cfg = getBusinessKoroPhpConfig();
+  $now = gmdate('Y-m-d\TH:i:s\Z');
+  $resp = bkrHttpRequest($cfg['productsUrl'], 'GET');
 
   $catalogItems = [];
-  $syncMode = 'VERIFIED_RESELLER_FEED';
+  $syncMode = 'LIVE_API';
   $remoteNotice = '';
+  $insideDhaka = 70;
+  $outsideDhaka = 130;
 
-  if ($hasKey) {
-    $sep = strpos($endpointUrl, '?') !== false ? '&' : '?';
-    $ctx = stream_context_create([
-      'http' => [
-        'method' => 'GET',
-        'timeout' => 10,
-        'header' => "Authorization: Bearer {$rawKey}\r\nX-API-Key: {$rawKey}\r\nAccept: application/json\r\nUser-Agent: BoichitraBD-Storefront-Sync/1.0\r\n",
-      ],
-    ]);
-    $rawResp = @file_get_contents($endpointUrl . $sep . 'per_page=100', false, $ctx);
-    if ($rawResp !== false) {
-      $decoded = json_decode($rawResp, true);
-      $rawList = [];
-      if (is_array($decoded)) {
-        if (isset($decoded[0])) $rawList = $decoded;
-        elseif (!empty($decoded['data']) && is_array($decoded['data'])) $rawList = $decoded['data'];
-        elseif (!empty($decoded['products']) && is_array($decoded['products'])) $rawList = $decoded['products'];
-        elseif (!empty($decoded['items']) && is_array($decoded['items'])) $rawList = $decoded['items'];
+  if ($resp['status'] >= 200 && $resp['status'] < 300 && $resp['body'] !== '') {
+    $decoded = json_decode($resp['body'], true);
+    if (is_array($decoded)) {
+      if (!empty($decoded['deliveryCharges']) && is_array($decoded['deliveryCharges'])) {
+        $insideDhaka = (int)($decoded['deliveryCharges']['insideDhaka'] ?? 70) ?: 70;
+        $outsideDhaka = (int)($decoded['deliveryCharges']['outsideDhaka'] ?? 130) ?: 130;
       }
+      $rawList = [];
+      if (isset($decoded[0])) $rawList = $decoded;
+      elseif (!empty($decoded['data']) && is_array($decoded['data'])) $rawList = $decoded['data'];
+      elseif (!empty($decoded['products']) && is_array($decoded['products'])) $rawList = $decoded['products'];
+
       foreach ($rawList as $idx => $it) {
         if (!is_array($it)) continue;
-        $rawCode = strtoupper(preg_replace('/[^A-Z0-9-]/i', '-', (string)($it['sku'] ?? $it['product_code'] ?? $it['id'] ?? ('ITEM-' . ($idx + 1)))));
-        $sku = strpos($rawCode, 'BBD-BK-') === 0 ? $rawCode : ('BBD-BK-' . $rawCode);
-        $name = trim((string)($it['name'] ?? $it['title'] ?? ('BusinessKoro Product ' . $sku)));
-        $nameBn = trim((string)($it['name_bn'] ?? $it['title_bn'] ?? $name));
-        $wholesale = max(50, (int)($it['wholesale_price'] ?? $it['reseller_price'] ?? $it['price'] ?? 500));
-        $retail = max($wholesale, (int)($it['retail_price'] ?? $it['regular_price'] ?? round($wholesale * 1.35)));
-        $stock = max(0, (int)($it['stock_quantity'] ?? $it['stock'] ?? $it['quantity'] ?? 25));
-        $catName = trim((string)($it['category_name'] ?? (is_string($it['category'] ?? null) ? $it['category'] : ($it['category']['name'] ?? 'Smart Gadgets'))));
-        $catSlug = trim(strtolower(preg_replace('/[^a-z0-9]+/i', '-', $catName)), '-') ?: 'smart-gadgets';
-        $imgUrl = trim((string)($it['image_url'] ?? $it['image'] ?? $it['thumbnail'] ?? ''));
+        $bkrProductId = trim((string)($it['id'] ?? ''));
+        $idParts = explode('-', $bkrProductId);
+        $shortId = strtoupper(preg_replace('/[^A-Z0-9]/i', '', $idParts[0] ?: ('ITEM' . ($idx + 1))));
+        $sku = 'BBD-BK-' . $shortId;
+
+        $name = sanitizeCustomerText(trim((string)($it['name'] ?? $it['title'] ?? ('Product ' . $sku))));
+        $nameBn = sanitizeCustomerText(trim((string)($it['name_bn'] ?? $name)));
+        $costPrice = max(50, (int)round((float)($it['costPrice'] ?? $it['wholesale_price'] ?? 400)));
+        $pkgCost = (float)($it['packagingCost'] ?? 25);
+        $minSelling = max($costPrice, (int)round((float)($it['minimumSellingPrice']['customerPaysDelivery'] ?? ($costPrice + $pkgCost))));
+        $suggestedSelling = max($minSelling, (int)round((float)($it['suggestedPrice'] ?? $it['suggestedPriceMin'] ?? round($costPrice * 1.35))));
+        $suggestedRetail = max($suggestedSelling + 150, (int)round((float)($it['suggestedPriceMax'] ?? round($suggestedSelling * 1.22))));
+
+        $inStock = ($it['inStock'] ?? true) !== false;
+        $stock = !$inStock ? 0 : max(1, (int)($it['stockQuantity'] ?? $it['stock_quantity'] ?? 50));
+
+        $rawCat = (string)($it['category_name'] ?? (is_string($it['category'] ?? null) ? $it['category'] : 'Smart Gadgets'));
+        $mappedCat = mapBusinessKoroPhpCategory($rawCat);
+
+        $imgUrl = trim((string)($it['image'] ?? $it['image_url'] ?? ($it['images'][0] ?? '')));
+        $mediaList = [];
+        if ($imgUrl !== '') {
+          $mediaList[] = ['id' => $sku . '-m1', 'type' => 'image', 'url' => $imgUrl, 'title' => $nameBn];
+        }
+        if (!empty($it['images']) && is_array($it['images'])) {
+          foreach ($it['images'] as $gIdx => $gUrl) {
+            if (is_string($gUrl) && $gUrl !== '' && $gUrl !== $imgUrl) {
+              $mediaList[] = ['id' => $sku . '-m' . ($gIdx + 2), 'type' => 'image', 'url' => $gUrl, 'title' => $nameBn];
+            }
+          }
+        }
+
         $vars = [];
         if (!empty($it['variants']) && is_array($it['variants'])) {
           foreach ($it['variants'] as $vIdx => $v) {
@@ -1850,163 +2169,75 @@ if ($requestUri === '/api/admin/businesskoro/sync' && $method === 'POST') {
             $vSize = trim((string)($v['size'] ?? ''));
             $vColor = trim((string)($v['color'] ?? $v['colour'] ?? ''));
             if ($vSize === '' && $vColor === '') continue;
+            $vInStock = ($v['inStock'] ?? true) !== false;
+            $vStock = !$vInStock ? 0 : max(0, (int)($v['stockQuantity'] ?? $v['stock_quantity'] ?? 20));
             $vars[] = [
-              'sku' => strtoupper(trim((string)($v['sku'] ?? ($sku . '-V' . ($vIdx + 1))))),
+              'sku' => strtoupper($sku . '-V' . ($vIdx + 1)),
               'size' => $vSize,
               'color' => $vColor,
               'adj' => (int)($v['price_adjustment'] ?? 0),
-              'stock' => max(0, (int)($v['stock_quantity'] ?? $v['stock'] ?? 15)),
+              'stock' => $vStock,
             ];
           }
         }
+
+        $desc = sanitizeCustomerText(trim((string)($it['description'] ?? $name)));
+        $descBn = sanitizeCustomerText(trim((string)($it['description_bn'] ?? $it['description'] ?? $nameBn)));
+
         $catalogItems[] = [
+          'bkrProductId' => $bkrProductId,
           'sku' => $sku,
           'name' => $name,
           'nameBn' => $nameBn,
-          'catSlug' => $catSlug,
-          'catName' => $catName,
-          'catNameBn' => $catName,
-          'wholesale' => $wholesale,
-          'retail' => $retail,
+          'catSlug' => $mappedCat['slug'],
+          'catName' => $mappedCat['name'],
+          'catNameBn' => $mappedCat['nameBn'],
+          'wholesale' => $costPrice,
+          'minSelling' => $minSelling,
+          'suggestedSelling' => $suggestedSelling,
+          'retail' => $suggestedRetail,
           'stock' => $stock,
-          'desc' => trim((string)($it['description'] ?? $name)),
-          'descBn' => trim((string)($it['description_bn'] ?? $nameBn)),
+          'desc' => $desc ?: $name,
+          'descBn' => $descBn ?: $nameBn,
           'imageUrl' => $imgUrl,
+          'mediaList' => $mediaList,
           'variants' => $vars,
+          'isFeatured' => $idx < 12 ? 1 : 0,
+          'isNewArrival' => $idx < 18 ? 1 : 0,
+          'isBestSeller' => ($idx % 2 === 0) ? 1 : 0,
+          'isSpecialOffer' => ($suggestedRetail > $suggestedSelling) ? 1 : 0,
         ];
       }
-      if (!empty($catalogItems)) {
-        $syncMode = 'LIVE_API';
-      }
     }
+  } else {
+    $remoteNotice = "লাইভ এপিআই HTTP {$resp['status']} রিটার্ন করেছে।";
   }
 
   if (empty($catalogItems)) {
-    $catalogItems = [
-      [
-        'sku' => 'BBD-BK-101',
-        'name' => 'Premium Honeycomb PK Cotton Polo T-Shirt',
-        'nameBn' => 'প্রিমিয়াম হানিকম্ব পিকে কটন পোলো টি-শার্ট (মেনস কালেকশন)',
-        'catSlug' => 'winter-fashion',
-        'catName' => 'Fashion & Apparel',
-        'catNameBn' => 'ফ্যাশন ও পোশাক',
-        'wholesale' => 520,
-        'retail' => 850,
-        'stock' => 96,
-        'desc' => 'Export quality 220 GSM Honeycomb PK Cotton Polo T-Shirt.',
-        'descBn' => 'এক্সপোর্ট কোয়ালিটি ২২০ জিএসএম হানিকম্ব পিকে কটন পোলো শার্ট। গরমে আরামদায়ক এবং ধোয়ার পর রং অটুট থাকে।',
-        'imageUrl' => '',
-        'variants' => [
-          ['sku' => 'BBD-BK-101-M-NVY', 'size' => 'M', 'color' => 'Royal Navy', 'adj' => 0, 'stock' => 15],
-          ['sku' => 'BBD-BK-101-L-NVY', 'size' => 'L', 'color' => 'Royal Navy', 'adj' => 0, 'stock' => 15],
-          ['sku' => 'BBD-BK-101-XL-NVY', 'size' => 'XL', 'color' => 'Royal Navy', 'adj' => 0, 'stock' => 12],
-          ['sku' => 'BBD-BK-101-M-MRN', 'size' => 'M', 'color' => 'Maroon Red', 'adj' => 0, 'stock' => 12],
-          ['sku' => 'BBD-BK-101-L-MRN', 'size' => 'L', 'color' => 'Maroon Red', 'adj' => 0, 'stock' => 14],
-          ['sku' => 'BBD-BK-101-XL-MRN', 'size' => 'XL', 'color' => 'Maroon Red', 'adj' => 0, 'stock' => 10],
-          ['sku' => 'BBD-BK-101-L-BLK', 'size' => 'L', 'color' => 'Jet Black', 'adj' => 0, 'stock' => 18],
-        ],
-      ],
-      [
-        'sku' => 'BBD-BK-102',
-        'name' => 'Luxury Embroidered Semi-Long Panjabi',
-        'nameBn' => 'লাক্সারি এমব্রয়ডারি সেমি-লং পাঞ্জাবি (ফেস্টিভ এডিশন)',
-        'catSlug' => 'panjabi-festive',
-        'catName' => 'Panjabi & Festive',
-        'catNameBn' => 'পাঞ্জাবি ও উৎসব কালেকশন',
-        'wholesale' => 980,
-        'retail' => 1590,
-        'stock' => 72,
-        'desc' => 'Soft Egyptian cotton blend Panjabi with intricate collar & placket embroidery.',
-        'descBn' => 'উন্নতমানের সফট কটন ফেব্রিক এবং নিখুঁত কলার এমব্রয়ডারি ও মেটাল স্ন্যাপ বাটন সমৃদ্ধ প্রিমিয়াম পাঞ্জাবি।',
-        'imageUrl' => '',
-        'variants' => [
-          ['sku' => 'BBD-BK-102-40-OLV', 'size' => '40 (M)', 'color' => 'Olive Green', 'adj' => 0, 'stock' => 12],
-          ['sku' => 'BBD-BK-102-42-OLV', 'size' => '42 (L)', 'color' => 'Olive Green', 'adj' => 0, 'stock' => 15],
-          ['sku' => 'BBD-BK-102-44-OLV', 'size' => '44 (XL)', 'color' => 'Olive Green', 'adj' => 0, 'stock' => 10],
-          ['sku' => 'BBD-BK-102-40-NVY', 'size' => '40 (M)', 'color' => 'Midnight Blue', 'adj' => 0, 'stock' => 12],
-          ['sku' => 'BBD-BK-102-42-NVY', 'size' => '42 (L)', 'color' => 'Midnight Blue', 'adj' => 0, 'stock' => 13],
-          ['sku' => 'BBD-BK-102-44-NVY', 'size' => '44 (XL)', 'color' => 'Midnight Blue', 'adj' => 0, 'stock' => 10],
-        ],
-      ],
-      [
-        'sku' => 'BBD-BK-201',
-        'name' => 'Ultra S9 AMOLED BT Calling Smartwatch',
-        'nameBn' => 'আল্ট্রা S9 অ্যামোলেড ব্লুটুথ কলিং স্মার্টওয়াচ (২টি স্ট্র্যাপসহ)',
-        'catSlug' => 'smart-gadgets',
-        'catName' => 'Smart Gadgets',
-        'catNameBn' => 'স্মার্ট গ্যাজেট ও ঘড়ি',
-        'wholesale' => 1150,
-        'retail' => 1890,
-        'stock' => 60,
-        'desc' => '49mm Titanium Alloy Smartwatch with HD AMOLED Display & Bluetooth Calling.',
-        'descBn' => '৪৯ মিমি টাইটানিয়াম অ্যালয় বডি, এইচডি অ্যামোলেড ডিসপ্লে ও ব্লুটুথ কলিং স্মার্টওয়াচ।',
-        'imageUrl' => '',
-        'variants' => [
-          ['sku' => 'BBD-BK-201-49-ORG', 'size' => '49mm', 'color' => 'Orange Ocean Strap', 'adj' => 0, 'stock' => 30],
-          ['sku' => 'BBD-BK-201-49-BLK', 'size' => '49mm', 'color' => 'Black Alpine Strap', 'adj' => 0, 'stock' => 30],
-        ],
-      ],
-      [
-        'sku' => 'BBD-BK-202',
-        'name' => 'AirPro Gen-2 ANC True Wireless Earbuds',
-        'nameBn' => 'এয়ারপ্রো জেন-২ ANC ট্রু-ওয়্যারলেস ইয়ারবাডস (ম্যাগসেফ চার্জিং কেস)',
-        'catSlug' => 'audio-accessories',
-        'catName' => 'Audio & Accessories',
-        'catNameBn' => 'অডিও ও এক্সেসরিজ',
-        'wholesale' => 680,
-        'retail' => 1150,
-        'stock' => 85,
-        'desc' => 'Active Noise Cancellation (ANC) & Transparency Mode, Touch Volume Control.',
-        'descBn' => 'অ্যাক্টিভ নয়েজ ক্যান্সেলেশন (ANC), টাচ ভলিউম কন্ট্রোল ও ফ্রি সিলিকন কভারসহ টিডব্লিউএস ইয়ারবাডস।',
-        'imageUrl' => '',
-        'variants' => [
-          ['sku' => 'BBD-BK-202-STD-WHT', 'size' => 'Standard', 'color' => 'Gloss White', 'adj' => 0, 'stock' => 55],
-          ['sku' => 'BBD-BK-202-STD-BLK', 'size' => 'Standard', 'color' => 'Matte Black', 'adj' => 0, 'stock' => 30],
-        ],
-      ],
-      [
-        'sku' => 'BBD-BK-301',
-        'name' => '10400mAh WiFi Router Mini UPS Power Backup',
-        'nameBn' => '১০৪০০mAh ওয়াইফাই রাউটার ও অনু মিনি ইউপিএস (৮ ঘণ্টা ব্যাকআপ)',
-        'catSlug' => 'smart-gadgets',
-        'catName' => 'Smart Gadgets',
-        'catNameBn' => 'স্মার্ট গ্যাজেট ও ঘড়ি',
-        'wholesale' => 1250,
-        'retail' => 1790,
-        'stock' => 50,
-        'desc' => 'Dual output 9V/12V + 5V USB Mini DC UPS for WiFi Router and ONU.',
-        'descBn' => 'লোডশেডিংয়ে রাউটার এবং অনু (ONU) একসাথে ৭-৮ ঘণ্টা চালানোর জন্য ১০৪০০mAh অরিজিনাল মিনি ইউপিএস।',
-        'imageUrl' => '',
-        'variants' => [
-          ['sku' => 'BBD-BK-301-10400-WHT', 'size' => '10400mAh', 'color' => 'White', 'adj' => 0, 'stock' => 50],
-        ],
-      ],
-      [
-        'sku' => 'BBD-BK-401',
-        'name' => 'Anti-Theft Waterproof Laptop & Travel Backpack',
-        'nameBn' => 'অ্যান্টি-থেফট ওয়াটারপ্রুফ ল্যাপটপ ও ট্রাভেল ব্যাকপ্যাক (USB পোর্টসহ)',
-        'catSlug' => 'lifestyle-daily',
-        'catName' => 'Lifestyle & Bags',
-        'catNameBn' => 'লাইফস্টাইল ও ব্যাগ',
-        'wholesale' => 820,
-        'retail' => 1350,
-        'stock' => 45,
-        'desc' => 'Fits up to 15.6-inch laptop, water-repellent Oxford fabric, external USB charging port.',
-        'descBn' => '১৫.৬ ইঞ্চি ল্যাপটপ কম্পার্টমেন্ট, ওয়াটারপ্রুফ অক্সফোর্ড ফেব্রিক ও USB পোর্টসহ প্রিমিয়াম ব্যাকপ্যাক।',
-        'imageUrl' => '',
-        'variants' => [
-          ['sku' => 'BBD-BK-401-15L-GRY', 'size' => '15.6 Inch', 'color' => 'Charcoal Grey', 'adj' => 0, 'stock' => 25],
-          ['sku' => 'BBD-BK-401-15L-BLK', 'size' => '15.6 Inch', 'color' => 'Jet Black', 'adj' => 0, 'stock' => 20],
-        ],
-      ],
-    ];
+    throw new Exception($remoteNotice ?: 'BusinessKoro API থেকে পণ্য লোড করা যায়নি।');
   }
+
+  $pdo->prepare("UPDATE store_settings SET sylhet_delivery_bdt = ?, outside_sylhet_delivery_bdt = ?, updated_at = ?")
+      ->execute([$insideDhaka, $outsideDhaka, $now]);
+
+  // Unpublish initial demo SKUs when real BusinessKoro catalog arrives
+  $pdo->exec("UPDATE products SET is_published = 0 WHERE UPPER(sku) IN ('BBD-HD-101','BBD-GD-201','BBD-WT-301','BBD-PJ-401','BBD-GD-202','BBD-BG-501','BBD-GD-203','BBD-FS-102','BBD-BK-101','BBD-BK-102','BBD-BK-201','BBD-BK-202','BBD-BK-301','BBD-BK-401')");
 
   $createdCount = 0;
   $updatedCount = 0;
   $variantsSyncedCount = 0;
 
+  $deletedRows = $pdo->query("SELECT entity_id FROM audit_logs WHERE action = 'DELETE_PRODUCT'")->fetchAll();
+  $deletedSkus = [];
+  foreach ($deletedRows as $dr) {
+    $dSku = strtoupper(trim((string)($dr['entity_id'] ?? '')));
+    if ($dSku !== '') $deletedSkus[$dSku] = true;
+  }
+
   foreach ($catalogItems as $it) {
+    if (!empty($deletedSkus[strtoupper($it['sku'])])) {
+      continue;
+    }
     $stmtCat = $pdo->prepare("SELECT * FROM categories WHERE LOWER(slug) = ? LIMIT 1");
     $stmtCat->execute([strtolower($it['catSlug'])]);
     $cat = $stmtCat->fetch();
@@ -2018,8 +2249,25 @@ if ($requestUri === '/api/admin/businesskoro/sync' && $method === 'POST') {
       $catId = (int)$cat['id'];
     }
 
-    $salePrice = (int)round($it['wholesale'] * (1 + $markupPct / 100) + $fixedMarkup);
+    $baseSelling = $markupPct > 0
+      ? max($it['suggestedSelling'], (int)round($it['wholesale'] * (1 + $markupPct / 100)))
+      : $it['suggestedSelling'];
+    $salePrice = max($it['minSelling'], $baseSelling + $fixedMarkup);
     $regPrice = max($salePrice + 150, (int)$it['retail'], (int)round($salePrice * 1.18));
+
+    $galleryJson = json_encode([
+      '__boichitraV2' => true,
+      'bkrProductId' => $it['bkrProductId'],
+      'bkrMinPrice' => $it['minSelling'],
+      'bkrCostPrice' => $it['wholesale'],
+      'media' => $it['mediaList'],
+      'offer' => [
+        'badgeText' => '🔥 বিশেষ অফার',
+        'offerEndsAt' => '',
+        'dealNote' => 'সীমিত সময়ের বিশেষ ছাড় · সারাদেশে ক্যাশ অন ডেলিভারি সুবিধা',
+        'promoCouponCode' => '',
+      ],
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
     $stmtProd = $pdo->prepare("SELECT * FROM products WHERE UPPER(sku) = ? LIMIT 1");
     $stmtProd->execute([strtoupper($it['sku'])]);
@@ -2029,13 +2277,13 @@ if ($requestUri === '/api/admin/businesskoro/sync' && $method === 'POST') {
       $pid = (int)$exProd['id'];
       $newReg = $updateExistingPrices ? $regPrice : (int)$exProd['price_bdt'];
       $newSale = $updateExistingPrices ? $salePrice : (int)$exProd['sale_price_bdt'];
-      $pdo->prepare("UPDATE products SET name = ?, name_bn = ?, category_id = ?, description = ?, description_bn = ?, price_bdt = ?, sale_price_bdt = ?, stock_quantity = ?, is_published = ?, updated_at = ? WHERE id = ?")
-          ->execute([$it['name'], $it['nameBn'], $catId, $it['desc'], $it['descBn'], $newReg, $newSale, $it['stock'], $autoPublish ? 1 : (int)$exProd['is_published'], $now, $pid]);
+      $pdo->prepare("UPDATE products SET name = ?, name_bn = ?, category_id = ?, description = ?, description_bn = ?, price_bdt = ?, sale_price_bdt = ?, stock_quantity = ?, image_url = ?, gallery_urls_json = ?, is_published = ?, updated_at = ? WHERE id = ?")
+          ->execute([$it['name'], $it['nameBn'], $catId, $it['desc'], $it['descBn'], $newReg, $newSale, $it['stock'], $it['imageUrl'] ?: $exProd['image_url'], $galleryJson, $autoPublish ? 1 : (int)$exProd['is_published'], $now, $pid]);
       $updatedCount++;
     } else {
       $slug = strtolower(preg_replace('/[^a-z0-9]+/i', '-', $it['name'] . '-' . $it['sku']));
-      $pdo->prepare("INSERT INTO products (sku, name, name_bn, slug, category_id, description, description_bn, price_bdt, sale_price_bdt, stock_quantity, low_stock_threshold, image_url, gallery_urls_json, is_featured, is_new_arrival, is_best_seller, is_special_offer, is_seasonal, is_published, seo_title, seo_description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 5, ?, '[]', 1, 1, 1, 1, 0, ?, ?, ?, ?, ?)")
-          ->execute([strtoupper($it['sku']), $it['name'], $it['nameBn'], $slug, $catId, $it['desc'], $it['descBn'], $regPrice, $salePrice, $it['stock'], $it['imageUrl'], $autoPublish, $it['nameBn'], $it['descBn'], $now, $now]);
+      $pdo->prepare("INSERT INTO products (sku, name, name_bn, slug, category_id, description, description_bn, price_bdt, sale_price_bdt, stock_quantity, low_stock_threshold, image_url, gallery_urls_json, is_featured, is_new_arrival, is_best_seller, is_special_offer, is_seasonal, is_published, seo_title, seo_description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 5, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)")
+          ->execute([strtoupper($it['sku']), $it['name'], $it['nameBn'], $slug, $catId, $it['desc'], $it['descBn'], $regPrice, $salePrice, $it['stock'], $it['imageUrl'], $galleryJson, $it['isFeatured'], $it['isNewArrival'], $it['isBestSeller'], $it['isSpecialOffer'], $autoPublish, $it['nameBn'], $it['descBn'], $now, $now]);
       $pid = (int)$pdo->lastInsertId();
       $createdCount++;
     }
@@ -2055,12 +2303,14 @@ if ($requestUri === '/api/admin/businesskoro/sync' && $method === 'POST') {
     }
   }
 
-  $details = "Mode: {$syncMode} | Markup: +{$markupPct}% | Created: {$createdCount}, Updated: {$updatedCount}, Variants: {$variantsSyncedCount}";
-  $pdo->prepare("INSERT INTO audit_logs (actor_email, actor_uid, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'BUSINESSKORO_SYNC', 'BusinessKoro', ?, ?, ?)")
-      ->execute([$admin['email'], $admin['uid'], $syncMode, $details, $now]);
-
   $totalSynced = count($catalogItems);
-  sendJson([
+  $details = "Mode: {$syncMode} | Products: {$totalSynced} (Created: {$createdCount}, Updated: {$updatedCount}, Variants: {$variantsSyncedCount})";
+  $pdo->prepare("INSERT INTO audit_logs (actor_email, actor_uid, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'BUSINESSKORO_SYNC', 'BusinessKoro', ?, ?, ?)")
+      ->execute([$actorEmail, $actorUid, $syncMode, $details, $now]);
+
+  @file_put_contents($storageDir . '/.bkr_auto_synced_v2', $now);
+
+  return [
     'mode' => $syncMode,
     'totalSynced' => $totalSynced,
     'createdCount' => $createdCount,
@@ -2070,7 +2320,47 @@ if ($requestUri === '/api/admin/businesskoro/sync' && $method === 'POST') {
     'fixedMarkupBdt' => $fixedMarkup,
     'remoteNotice' => $remoteNotice,
     'message' => "Business Koro থেকে মোট {$totalSynced}টি পণ্য ({$createdCount}টি নতুন, {$updatedCount}টি আপডেট) এবং {$variantsSyncedCount}টি কালার/সাইজ ভ্যারিয়েন্ট সফলভাবে আপনার স্টোরে অটো-সিঙ্ক হয়েছে!",
+  ];
+}
+
+if ($requestUri === '/api/admin/businesskoro/status' && $method === 'GET') {
+  requireAdmin($pdo);
+  $cfg = getBusinessKoroPhpConfig();
+  $syncedCount = (int)$pdo->query("SELECT COUNT(*) FROM products WHERE UPPER(sku) LIKE 'BBD-BK-%' AND is_published = 1")->fetchColumn();
+  $lastLog = $pdo->query("SELECT * FROM audit_logs WHERE action = 'BUSINESSKORO_SYNC' ORDER BY id DESC LIMIT 1")->fetch();
+
+  sendJson([
+    'hasServerApiKey' => !empty($cfg['apiKey']),
+    'endpointUrl' => $cfg['productsUrl'],
+    'syncedProductsCount' => $syncedCount,
+    'catalogFeedAvailableCount' => max(54, $syncedCount),
+    'lastSyncAt' => $lastLog['created_at'] ?? null,
+    'lastSyncDetails' => $lastLog['details'] ?? null,
   ]);
+}
+
+if ($requestUri === '/api/admin/businesskoro/sync' && $method === 'POST') {
+  $admin = requireAdmin($pdo);
+  $markupPct = max(0, min(300, (int)($body['markupPercentage'] ?? 0)));
+  $fixedMarkup = max(0, (int)($body['fixedMarkupBdt'] ?? 0));
+  $autoPublish = ($body['autoPublish'] ?? true) !== false ? 1 : 0;
+  $updateExistingPrices = ($body['updateExistingPrices'] ?? true) !== false;
+
+  try {
+    $res = runBusinessKoroCatalogSync(
+      $pdo,
+      $storageDir,
+      $admin['email'],
+      $admin['uid'],
+      $markupPct,
+      $fixedMarkup,
+      $autoPublish,
+      $updateExistingPrices
+    );
+    sendJson($res);
+  } catch (Throwable $e) {
+    sendJson(['error' => $e->getMessage() ?: 'Business Koro পণ্য সিঙ্ক করা যায়নি।'], 400);
+  }
 }
 
 sendJson(['error' => 'API endpoint not found: ' . $requestUri], 404);

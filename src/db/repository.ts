@@ -25,7 +25,7 @@ import {
   parseOrderNoteWithManualPayment,
   serializeOrderNoteWithManualPayment,
 } from '../lib/visuals.ts';
-import { normalizeBdPhone } from '../lib/bd-locations.ts';
+import { normalizeBdPhone, BANGLADESH_DISTRICTS } from '../lib/bd-locations.ts';
 
 let seedPromise: Promise<void> | null = null;
 
@@ -741,6 +741,17 @@ export async function ensureStoreInitialized(): Promise<void> {
               prod.galleryUrlsJson.includes('রিসেলার') ||
               prod.galleryUrlsJson.includes('পাইকারি')))
         ) {
+          let preservedGalleryJson = cleanedGalleryJson;
+          try {
+            const origParsed = JSON.parse(prod.galleryUrlsJson || '{}');
+            const cleanParsed = JSON.parse(cleanedGalleryJson);
+            if (origParsed && origParsed.bkrProductId) {
+              cleanParsed.bkrProductId = origParsed.bkrProductId;
+              cleanParsed.bkrMinimumSellingPrice = origParsed.bkrMinimumSellingPrice;
+              preservedGalleryJson = JSON.stringify(cleanParsed);
+            }
+          } catch (_e) {}
+
           await db
             .update(products)
             .set({
@@ -748,11 +759,33 @@ export async function ensureStoreInitialized(): Promise<void> {
               nameBn: cleanedNameBn,
               description: cleanedDesc,
               descriptionBn: cleanedDescBn,
-              galleryUrlsJson: cleanedGalleryJson,
+              galleryUrlsJson: preservedGalleryJson,
               seoTitle: sanitizeCustomerProductText(prod.seoTitle || cleanedNameBn),
               seoDescription: sanitizeCustomerProductText(prod.seoDescription || cleanedDescBn),
             })
             .where(eq(products.id, prod.id));
+        }
+      }
+
+      // Automatically sync real catalog from BusinessKoro Storefront API on startup if not yet synced
+      const hasLiveBkrProducts = latestProds.some((p) => {
+        try {
+          const parsed = JSON.parse(p.galleryUrlsJson || '{}');
+          return Boolean(parsed && parsed.bkrProductId);
+        } catch (_e) {
+          return false;
+        }
+      });
+      if (!hasLiveBkrProducts) {
+        try {
+          await syncBusinessKoroProductsInternal('system@boichitrabd.com', 'system', {
+            markupPercentage: 0,
+            fixedMarkupBdt: 0,
+            autoPublish: true,
+            updateExistingPrices: true,
+          });
+        } catch (syncErr) {
+          console.warn('Initial BusinessKoro auto-sync skipped:', syncErr);
         }
       }
     } catch (error) {
@@ -1203,7 +1236,25 @@ export async function createGuestOrder(input: GuestCheckoutInput) {
       return {
         order: newOrder,
         items: insertedOrderItems,
+        verifiedItems,
         duplicatePrevented: false,
+      };
+    }).then(async (txResult) => {
+      // 9. Automatically forward order items to BusinessKoro Storefront Orders API
+      if (!txResult.duplicatePrevented && txResult.verifiedItems) {
+        await forwardOrderToBusinessKoro(
+          txResult.order,
+          txResult.verifiedItems,
+          input,
+          normalizedPhone
+        ).catch((err) => {
+          console.error('BusinessKoro order forwarding error:', err);
+        });
+      }
+      return {
+        order: txResult.order,
+        items: txResult.items,
+        duplicatePrevented: txResult.duplicatePrevented,
       };
     });
   } catch (error: any) {
@@ -1521,6 +1572,25 @@ export async function saveProductAdmin(
       let savedProduct: typeof products.$inferSelect;
 
       if (payload.id) {
+        let nextGalleryJson = payload.galleryUrlsJson ?? '[]';
+        try {
+          const existingRows = await tx
+            .select()
+            .from(products)
+            .where(eq(products.id, payload.id));
+          if (existingRows[0] && existingRows[0].galleryUrlsJson) {
+            const origParsed = JSON.parse(existingRows[0].galleryUrlsJson);
+            const newParsed = JSON.parse(nextGalleryJson);
+            if (origParsed && origParsed.bkrProductId && newParsed && typeof newParsed === 'object') {
+              newParsed.bkrProductId = origParsed.bkrProductId;
+              newParsed.bkrMinPrice = origParsed.bkrMinPrice ?? origParsed.bkrMinimumSellingPrice;
+              newParsed.bkrMinimumSellingPrice = origParsed.bkrMinimumSellingPrice ?? origParsed.bkrMinPrice;
+              newParsed.bkrCostPrice = origParsed.bkrCostPrice;
+              nextGalleryJson = JSON.stringify(newParsed);
+            }
+          }
+        } catch (_e) {}
+
         const updated = await tx
           .update(products)
           .set({
@@ -1535,7 +1605,7 @@ export async function saveProductAdmin(
             stockQuantity: payload.stockQuantity,
             lowStockThreshold: payload.lowStockThreshold ?? 5,
             imageUrl: payload.imageUrl,
-            galleryUrlsJson: payload.galleryUrlsJson ?? '[]',
+            galleryUrlsJson: nextGalleryJson,
             isFeatured: payload.isFeatured,
             isNewArrival: payload.isNewArrival,
             isBestSeller: payload.isBestSeller,
@@ -1672,6 +1742,73 @@ export async function saveProductAdmin(
       cause: error,
     });
   }
+}
+
+export async function deleteProductAdmin(
+  adminEmail: string,
+  adminUid: string,
+  productId: number
+) {
+  await ensureStoreInitialized();
+  try {
+    const existingRows = await db
+      .select()
+      .from(products)
+      .where(eq(products.id, productId));
+    const target = existingRows[0];
+    if (!target) {
+      throw new Error('পণ্যটি খুঁজে পাওয়া যায়নি।');
+    }
+
+    // Ensure order_items foreign key never blocks deleting a product with past orders
+    await pool
+      .query(
+        `ALTER TABLE order_items ALTER COLUMN product_id DROP NOT NULL;
+         ALTER TABLE order_items DROP CONSTRAINT IF EXISTS order_items_product_id_products_id_fk;`
+      )
+      .catch(() => {});
+
+    await db.transaction(async (tx) => {
+      await tx.delete(productVariants).where(eq(productVariants.productId, productId));
+      await tx.delete(products).where(eq(products.id, productId));
+      await tx.insert(auditLogs).values({
+        actorEmail: adminEmail,
+        actorUid: adminUid,
+        action: 'DELETE_PRODUCT',
+        entityType: 'Product',
+        entityId: target.sku,
+        details: `Deleted product "${target.nameBn}" (SKU: ${target.sku})`,
+      });
+    });
+
+    return { deleted: true, sku: target.sku, nameBn: target.nameBn };
+  } catch (error: any) {
+    console.error('Failed to delete product:', error);
+    throw new Error(error.message || 'পণ্যটি মুছে ফেলতে সমস্যা হয়েছে।', { cause: error });
+  }
+}
+
+export async function bulkDeleteProductsAdmin(
+  adminEmail: string,
+  adminUid: string,
+  productIds: number[]
+) {
+  await ensureStoreInitialized();
+  const cleanIds = Array.from(
+    new Set((productIds || []).map((id) => Number(id)).filter((id) => id > 0))
+  );
+  if (cleanIds.length === 0) {
+    throw new Error('ডিলিট করার জন্য অন্তত ১টি পণ্য নির্বাচন করুন।');
+  }
+
+  let deletedCount = 0;
+  for (const pid of cleanIds) {
+    try {
+      await deleteProductAdmin(adminEmail, adminUid, pid);
+      deletedCount++;
+    } catch (_e) {}
+  }
+  return { deleted: true, deletedCount };
 }
 
 export async function saveCouponAdmin(
@@ -1963,6 +2100,7 @@ export async function recordExportAuditLog(
 }
 
 export interface BusinessKoroCatalogItem {
+  bkrProductId?: string;
   sku: string;
   name: string;
   nameBn: string;
@@ -1970,6 +2108,8 @@ export interface BusinessKoroCatalogItem {
   categoryName: string;
   categoryNameBn: string;
   wholesalePriceBdt: number;
+  minSellingPriceBdt?: number;
+  suggestedSellingPriceBdt: number;
   suggestedRetailPriceBdt: number;
   stockQuantity: number;
   description: string;
@@ -1990,6 +2130,41 @@ export interface BusinessKoroCatalogItem {
   }>;
 }
 
+const DEFAULT_BUSINESSKORO_API_KEY = 'bkr_d00b18119bbae3dcbe10312bfe949196dd0c0c1909e551ec';
+const DEFAULT_BUSINESSKORO_PRODUCTS_URL = 'https://api.businesskoro.com/api/v1/storefront/products';
+const DEFAULT_BUSINESSKORO_ORDERS_URL = 'https://api.businesskoro.com/api/v1/storefront/orders';
+const DEFAULT_BUSINESSKORO_DOMAIN = 'boichitrabd.com';
+
+function getBusinessKoroConfig() {
+  const envKey = (process.env.BUSINESSKORO_API_KEY || '').trim();
+  const apiKey =
+    envKey.length > 4 && envKey !== 'your_businesskoro_reseller_api_key'
+      ? envKey
+      : DEFAULT_BUSINESSKORO_API_KEY;
+  const envUrl = (process.env.BUSINESSKORO_API_URL || '').trim();
+  let productsUrl = DEFAULT_BUSINESSKORO_PRODUCTS_URL;
+  if (envUrl && envUrl !== 'https://businesskoro.com/api/v1/products') {
+    productsUrl = envUrl.endsWith('/storefront')
+      ? `${envUrl}/products`
+      : envUrl;
+  }
+  const ordersUrl = productsUrl.replace(/\/products\/?$/, '/orders');
+  return { apiKey, productsUrl, ordersUrl, domain: DEFAULT_BUSINESSKORO_DOMAIN };
+}
+
+function getBusinessKoroHeaders(apiKey: string, domain = DEFAULT_BUSINESSKORO_DOMAIN) {
+  return {
+    Authorization: `Bearer ${apiKey}`,
+    'x-api-key': apiKey,
+    Origin: `https://${domain}`,
+    Referer: `https://${domain}/`,
+    'x-domain': domain,
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    'User-Agent': 'BoichitraBD-Storefront/1.0',
+  };
+}
+
 export function getBuiltInBusinessKoroFeed(): BusinessKoroCatalogItem[] {
   return [
     {
@@ -2000,7 +2175,8 @@ export function getBuiltInBusinessKoroFeed(): BusinessKoroCatalogItem[] {
       categoryName: 'Fashion & Apparel',
       categoryNameBn: 'ফ্যাশন ও পোশাক',
       wholesalePriceBdt: 520,
-      suggestedRetailPriceBdt: 850,
+      suggestedSellingPriceBdt: 850,
+      suggestedRetailPriceBdt: 1050,
       stockQuantity: 96,
       description:
         'Export quality 220 GSM Honeycomb PK Cotton Polo T-Shirt. Breathable collar rib and colorfast dyeing for everyday comfort.',
@@ -2013,16 +2189,6 @@ export function getBuiltInBusinessKoroFeed(): BusinessKoroCatalogItem[] {
           url: createStudioProductSvg('tshirt', '#14213D', '#286F65', 'BBD-BK-101'),
           title: 'Royal Navy Polo View',
         },
-        {
-          type: 'image',
-          url: createStudioProductSvg('tshirt', '#7F1D1D', '#B91C1C', 'BBD-BK-101'),
-          title: 'Crimson Maroon Variant',
-        },
-        {
-          type: 'image',
-          url: createStudioProductSvg('tshirt', '#111827', '#374151', 'BBD-BK-101'),
-          title: 'Jet Black Variant',
-        },
       ],
       isFeatured: true,
       isNewArrival: true,
@@ -2033,187 +2199,52 @@ export function getBuiltInBusinessKoroFeed(): BusinessKoroCatalogItem[] {
         { sku: 'BBD-BK-101-M-NVY', size: 'M', color: 'Royal Navy', priceAdjustmentBdt: 0, stockQuantity: 12 },
         { sku: 'BBD-BK-101-L-NVY', size: 'L', color: 'Royal Navy', priceAdjustmentBdt: 0, stockQuantity: 15 },
         { sku: 'BBD-BK-101-XL-NVY', size: 'XL', color: 'Royal Navy', priceAdjustmentBdt: 0, stockQuantity: 12 },
-        { sku: 'BBD-BK-101-XXL-NVY', size: 'XXL', color: 'Royal Navy', priceAdjustmentBdt: 50, stockQuantity: 8 },
-        { sku: 'BBD-BK-101-M-MRN', size: 'M', color: 'Maroon Red', priceAdjustmentBdt: 0, stockQuantity: 10 },
-        { sku: 'BBD-BK-101-L-MRN', size: 'L', color: 'Maroon Red', priceAdjustmentBdt: 0, stockQuantity: 14 },
-        { sku: 'BBD-BK-101-XL-MRN', size: 'XL', color: 'Maroon Red', priceAdjustmentBdt: 0, stockQuantity: 10 },
-        { sku: 'BBD-BK-101-M-BLK', size: 'M', color: 'Jet Black', priceAdjustmentBdt: 0, stockQuantity: 8 },
-        { sku: 'BBD-BK-101-L-BLK', size: 'L', color: 'Jet Black', priceAdjustmentBdt: 0, stockQuantity: 10 },
-        { sku: 'BBD-BK-101-XL-BLK', size: 'XL', color: 'Jet Black', priceAdjustmentBdt: 0, stockQuantity: 9 },
-      ],
-    },
-    {
-      sku: 'BBD-BK-102',
-      name: 'Luxury Embroidered Semi-Long Panjabi',
-      nameBn: 'লাক্সারি এমব্রয়ডারি সেমি-লং পাঞ্জাবি (ফেস্টিভ এডিশন)',
-      categorySlug: 'panjabi-festive',
-      categoryName: 'Panjabi & Festive',
-      categoryNameBn: 'পাঞ্জাবি ও উৎসব কালেকশন',
-      wholesalePriceBdt: 980,
-      suggestedRetailPriceBdt: 1590,
-      stockQuantity: 72,
-      description:
-        'Soft Egyptian cotton blend Panjabi with intricate collar & placket embroidery and metal snap buttons.',
-      descriptionBn:
-        'উন্নতমানের সফট কটন ফেব্রিক এবং নিখুঁত কলার এমব্রয়ডারি ও মেটাল স্ন্যাপ বাটন সমৃদ্ধ প্রিমিয়াম পাঞ্জাবি। উৎসব ও জুম্মার নামাজের জন্য আদর্শ।',
-      imageUrl: createStudioProductSvg('panjabi', '#064E3B', '#047857', 'BBD-BK-102'),
-      galleryMedia: [
-        {
-          type: 'image',
-          url: createStudioProductSvg('panjabi', '#064E3B', '#047857', 'BBD-BK-102'),
-          title: 'Olive Emerald Panjabi',
-        },
-        {
-          type: 'image',
-          url: createStudioProductSvg('panjabi', '#1E1B4B', '#312E81', 'BBD-BK-102'),
-          title: 'Midnight Blue Panjabi',
-        },
-      ],
-      isFeatured: true,
-      isNewArrival: true,
-      isBestSeller: false,
-      isSpecialOffer: true,
-      offerBadgeText: '✨ প্রিমিয়াম কালেকশন',
-      variants: [
-        { sku: 'BBD-BK-102-40-OLV', size: '40 (M)', color: 'Olive Green', priceAdjustmentBdt: 0, stockQuantity: 12 },
-        { sku: 'BBD-BK-102-42-OLV', size: '42 (L)', color: 'Olive Green', priceAdjustmentBdt: 0, stockQuantity: 15 },
-        { sku: 'BBD-BK-102-44-OLV', size: '44 (XL)', color: 'Olive Green', priceAdjustmentBdt: 0, stockQuantity: 10 },
-        { sku: 'BBD-BK-102-40-NVY', size: '40 (M)', color: 'Midnight Blue', priceAdjustmentBdt: 0, stockQuantity: 10 },
-        { sku: 'BBD-BK-102-42-NVY', size: '42 (L)', color: 'Midnight Blue', priceAdjustmentBdt: 0, stockQuantity: 14 },
-        { sku: 'BBD-BK-102-44-NVY', size: '44 (XL)', color: 'Midnight Blue', priceAdjustmentBdt: 0, stockQuantity: 11 },
-      ],
-    },
-    {
-      sku: 'BBD-BK-201',
-      name: 'Ultra S9 AMOLED BT Calling Smartwatch',
-      nameBn: 'আল্ট্রা S9 অ্যামোলেড ব্লুটুথ কলিং স্মার্টওয়াচ (২টি স্ট্র্যাপসহ)',
-      categorySlug: 'smart-gadgets',
-      categoryName: 'Smart Gadgets',
-      categoryNameBn: 'স্মার্ট গ্যাজেট ও ঘড়ি',
-      wholesalePriceBdt: 1150,
-      suggestedRetailPriceBdt: 1890,
-      stockQuantity: 60,
-      description:
-        '49mm Titanium Alloy Frame Smartwatch with HD AMOLED Display, Bluetooth Calling, Heart Rate & SpO2 Monitor, and 2 straps included.',
-      descriptionBn:
-        '৪৯ মিমি টাইটানিয়াম অ্যালয় বডি, এইচডি অ্যামোলেড ডিসপ্লে, সরাসরি ব্লুটুথ কলিং, হার্ট রেট মনিটর এবং বক্সে ২টি আকর্ষণীয় স্ট্র্যাপসহ প্রিমিয়াম স্মার্টওয়াচ।',
-      imageUrl: createStudioProductSvg('smartwatch', '#0F172A', '#EA580C', 'BBD-BK-201'),
-      galleryMedia: [
-        {
-          type: 'image',
-          url: createStudioProductSvg('smartwatch', '#0F172A', '#EA580C', 'BBD-BK-201'),
-          title: 'Titanium Orange Ocean Strap',
-        },
-        {
-          type: 'image',
-          url: createStudioProductSvg('smartwatch', '#1E293B', '#334155', 'BBD-BK-201'),
-          title: 'Matte Black Alpine Strap',
-        },
-      ],
-      isFeatured: true,
-      isNewArrival: true,
-      isBestSeller: true,
-      isSpecialOffer: true,
-      offerBadgeText: '⚡ ফ্ল্যাশ গ্যাজেট ডিল',
-      variants: [
-        { sku: 'BBD-BK-201-49-ORG', size: '49mm', color: 'Orange Ocean Strap', priceAdjustmentBdt: 0, stockQuantity: 30 },
-        { sku: 'BBD-BK-201-49-BLK', size: '49mm', color: 'Black Alpine Strap', priceAdjustmentBdt: 0, stockQuantity: 30 },
-      ],
-    },
-    {
-      sku: 'BBD-BK-202',
-      name: 'AirPro Gen-2 ANC True Wireless Earbuds',
-      nameBn: 'এয়ারপ্রো জেন-২ ANC ট্রু-ওয়্যারলেস ইয়ারবাডস (ম্যাগসেফ চার্জিং কেস)',
-      categorySlug: 'audio-accessories',
-      categoryName: 'Audio & Accessories',
-      categoryNameBn: 'অডিও ও এক্সেসরিজ',
-      wholesalePriceBdt: 680,
-      suggestedRetailPriceBdt: 1150,
-      stockQuantity: 85,
-      description:
-        'Active Noise Cancellation (ANC) & Transparency Mode, Touch Volume Control, 30 Hours Total Backup, and Free Silicone Protective Cover.',
-      descriptionBn:
-        'অ্যাক্টিভ নয়েজ ক্যান্সেলেশন (ANC), টাচ ভলিউম কন্ট্রোল, ৩০ ঘণ্টা ব্যাটারি ব্যাকআপ এবং ফ্রি সিলিকন কভারসহ বেস্টসেলার টিডব্লিউএস ইয়ারবাডস।',
-      imageUrl: createStudioProductSvg('earbuds', '#1E293B', '#0284C7', 'BBD-BK-202'),
-      galleryMedia: [
-        {
-          type: 'image',
-          url: createStudioProductSvg('earbuds', '#1E293B', '#0284C7', 'BBD-BK-202'),
-          title: 'Gloss White MagSafe Case',
-        },
-      ],
-      isFeatured: false,
-      isNewArrival: true,
-      isBestSeller: true,
-      isSpecialOffer: false,
-      variants: [
-        { sku: 'BBD-BK-202-STD-WHT', size: 'Standard', color: 'Gloss White', priceAdjustmentBdt: 0, stockQuantity: 55 },
-        { sku: 'BBD-BK-202-STD-BLK', size: 'Standard', color: 'Matte Black', priceAdjustmentBdt: 0, stockQuantity: 30 },
-      ],
-    },
-    {
-      sku: 'BBD-BK-301',
-      name: '10400mAh WiFi Router Mini UPS Power Backup',
-      nameBn: '১০৪০০mAh ওয়াইফাই রাউটার ও অনু মিনি ইউপিএস (৮ ঘণ্টা ব্যাকআপ)',
-      categorySlug: 'smart-gadgets',
-      categoryName: 'Smart Gadgets',
-      categoryNameBn: 'স্মার্ট গ্যাজেট ও ঘড়ি',
-      wholesalePriceBdt: 1250,
-      suggestedRetailPriceBdt: 1790,
-      stockQuantity: 50,
-      description:
-        'Dual output 9V/12V + 5V USB Mini DC UPS for WiFi Router and ONU. Zero-lag automatic switchover during load shedding up to 8 hours.',
-      descriptionBn:
-        'লোডশেডিংয়েও ওয়াইফাই থাকবে নিরবচ্ছিন্ন! রাউটার এবং অনু (ONU) একসাথে ৭-৮ ঘণ্টা চালানোর জন্য ১০৪০০mAh অরিজিনাল মিনি ডিসি ইউপিএস।',
-      imageUrl: createStudioProductSvg('powerbank', '#14213D', '#16A34A', 'BBD-BK-301'),
-      galleryMedia: [
-        {
-          type: 'image',
-          url: createStudioProductSvg('powerbank', '#14213D', '#16A34A', 'BBD-BK-301'),
-          title: 'Dual Output 9V/12V Router Mini UPS',
-        },
-      ],
-      isFeatured: true,
-      isNewArrival: false,
-      isBestSeller: true,
-      isSpecialOffer: true,
-      offerBadgeText: '🔌 লোডশেডিং সলিউশন',
-      variants: [
-        { sku: 'BBD-BK-301-10400-WHT', size: '10400mAh', color: 'White', priceAdjustmentBdt: 0, stockQuantity: 50 },
-      ],
-    },
-    {
-      sku: 'BBD-BK-401',
-      name: 'Anti-Theft Waterproof Laptop & Travel Backpack',
-      nameBn: 'অ্যান্টি-থেফট ওয়াটারপ্রুফ ল্যাপটপ ও ট্রাভেল ব্যাকপ্যাক (USB পোর্টসহ)',
-      categorySlug: 'lifestyle-daily',
-      categoryName: 'Lifestyle & Bags',
-      categoryNameBn: 'লাইফস্টাইল ও ব্যাগ',
-      wholesalePriceBdt: 820,
-      suggestedRetailPriceBdt: 1350,
-      stockQuantity: 45,
-      description:
-        'Fits up to 15.6-inch laptop, water-repellent Oxford fabric, external USB charging port, hidden back zipper pocket, and ergonomic padded straps.',
-      descriptionBn:
-        '১৫.৬ ইঞ্চি ল্যাপটপ কম্পার্টমেন্ট, ওয়াটারপ্রুফ অক্সফোর্ড ফেব্রিক ও এক্সটার্নাল USB চার্জিং পোর্টসহ প্রিমিয়াম অফিস ও ট্রাভেল ব্যাকপ্যাক।',
-      imageUrl: createStudioProductSvg('backpack', '#1F2937', '#286F65', 'BBD-BK-401'),
-      galleryMedia: [
-        {
-          type: 'image',
-          url: createStudioProductSvg('backpack', '#1F2937', '#286F65', 'BBD-BK-401'),
-          title: 'Charcoal Grey Waterproof Backpack',
-        },
-      ],
-      isFeatured: false,
-      isNewArrival: true,
-      isBestSeller: false,
-      isSpecialOffer: false,
-      variants: [
-        { sku: 'BBD-BK-401-15L-GRY', size: '15.6 Inch', color: 'Charcoal Grey', priceAdjustmentBdt: 0, stockQuantity: 25 },
-        { sku: 'BBD-BK-401-15L-BLK', size: '15.6 Inch', color: 'Jet Black', priceAdjustmentBdt: 0, stockQuantity: 20 },
       ],
     },
   ];
+}
+
+function mapBusinessKoroCategory(rawCat: string): {
+  slug: string;
+  name: string;
+  nameBn: string;
+} {
+  const lower = rawCat.trim().toLowerCase();
+  if (lower.includes('fashion') || lower.includes('apparel') || lower.includes('hoodie')) {
+    return {
+      slug: 'fashion-item',
+      name: 'Fashion & Apparel',
+      nameBn: 'ফ্যাশন ও পোশাক',
+    };
+  }
+  if (lower.includes('gaming') || lower.includes('game')) {
+    return {
+      slug: 'gaming-item',
+      name: 'Gaming Gear',
+      nameBn: 'গেমিং আইটেম',
+    };
+  }
+  if (lower.includes('decor') || lower.includes('home') || lower.includes('lamp')) {
+    return {
+      slug: 'decorating-item',
+      name: 'Home & Decor',
+      nameBn: 'হোম ও ডেকোরেশন',
+    };
+  }
+  if (lower.includes('gadget') || lower.includes('tech') || lower.includes('watch')) {
+    return {
+      slug: 'smart-gadgets',
+      name: 'Smart Gadgets',
+      nameBn: 'স্মার্ট গ্যাজেট',
+    };
+  }
+  const slug =
+    lower.replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'featured-collection';
+  return {
+    slug,
+    name: rawCat.trim() || 'Smart Gadgets',
+    nameBn: rawCat.trim() || 'স্মার্ট গ্যাজেট',
+  };
 }
 
 function normalizeRemoteBusinessKoroPayload(rawItems: any[]): BusinessKoroCatalogItem[] {
@@ -2222,72 +2253,91 @@ function normalizeRemoteBusinessKoroPayload(rawItems: any[]): BusinessKoroCatalo
     const item = rawItems[i];
     if (!item || typeof item !== 'object') continue;
 
-    const rawCode = String(
-      item.sku || item.product_code || item.code || item.id || `ITEM-${i + 1}`
-    )
-      .trim()
-      .toUpperCase()
-      .replace(/[^A-Z0-9-]/g, '-');
-    const sku = rawCode.startsWith('BBD-BK-') ? rawCode : `BBD-BK-${rawCode}`;
+    const bkrProductId = item.id ? String(item.id).trim() : '';
+    const shortId = bkrProductId
+      ? bkrProductId.split('-')[0].toUpperCase()
+      : String(item.sku || item.product_code || `ITEM-${i + 1}`)
+          .trim()
+          .toUpperCase()
+          .replace(/[^A-Z0-9]/g, '');
+    const sku = `BBD-BK-${shortId}`;
 
-    const rawName = String(item.name || item.title || item.product_name || `Premium Product ${sku}`).trim();
+    const rawName = String(
+      item.name || item.title || item.product_name || `Premium Product ${sku}`
+    ).trim();
     const name = sanitizeCustomerProductText(rawName) || rawName;
     const rawNameBn = String(item.name_bn || item.title_bn || item.nameBn || name).trim();
     const nameBn = sanitizeCustomerProductText(rawNameBn) || rawNameBn;
 
-    const wholesalePrice = Math.max(
+    const costPrice = Math.max(
       50,
-      Number(
-        item.wholesale_price ??
-          item.reseller_price ??
-          item.dealer_price ??
-          item.cost_price ??
-          item.price ??
-          500
-      ) || 500
+      Math.round(
+        Number(
+          item.costPrice ??
+            item.wholesale_price ??
+            item.reseller_price ??
+            item.cost_price ??
+            item.price ??
+            400
+        ) || 400
+      )
+    );
+    const minSellingPrice = Math.max(
+      costPrice,
+      Math.round(
+        Number(
+          item.minimumSellingPrice?.customerPaysDelivery ??
+            costPrice + Number(item.packagingCost || 25)
+        ) || costPrice
+      )
+    );
+    const suggestedSelling = Math.max(
+      minSellingPrice,
+      Math.round(
+        Number(
+          item.suggestedPrice ??
+            item.suggestedPriceMin ??
+            item.retail_price ??
+            Math.round(costPrice * 1.35)
+        ) || minSellingPrice
+      )
     );
     const suggestedRetail = Math.max(
-      wholesalePrice,
-      Number(
-        item.retail_price ??
-          item.regular_price ??
-          item.suggested_price ??
-          item.mrp ??
-          Math.round(wholesalePrice * 1.35)
-      ) || Math.round(wholesalePrice * 1.35)
+      suggestedSelling + 150,
+      Math.round(
+        Number(
+          item.suggestedPriceMax ??
+            item.regular_price ??
+            item.mrp ??
+            Math.round(suggestedSelling * 1.22)
+        ) || Math.round(suggestedSelling * 1.22)
+      )
     );
 
-    const stockQty = Math.max(
-      0,
-      Number(item.stock_quantity ?? item.stock ?? item.quantity ?? item.qty ?? 25) || 25
-    );
+    const inStock = item.inStock !== false;
+    const stockQty = !inStock
+      ? 0
+      : Math.max(
+          1,
+          Number(item.stockQuantity ?? item.stock_quantity ?? item.stock ?? 50) || 50
+        );
 
-    const catName = String(
+    const rawCat = String(
       item.category_name ||
         (typeof item.category === 'string' ? item.category : item.category?.name) ||
         'Smart Gadgets'
     ).trim();
-    const catNameBn = String(
-      item.category_name_bn ||
-        (typeof item.category === 'object' ? item.category?.name_bn : '') ||
-        catName
-    ).trim();
-    const catSlug =
-      catName
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/(^-|-$)/g, '') || 'featured-collection';
+    const mappedCat = mapBusinessKoroCategory(rawCat);
 
     const primaryImg = String(
-      item.image_url ||
-        item.image ||
-        item.thumbnail ||
-        item.featured_image ||
+      item.image ||
+        item.image_url ||
         (Array.isArray(item.images) && item.images[0]
           ? typeof item.images[0] === 'string'
             ? item.images[0]
             : item.images[0].url || item.images[0].src
           : '') ||
+        item.thumbnail ||
         createStudioProductSvg('smartwatch', '#14213D', '#286F65', sku)
     ).trim();
 
@@ -2320,15 +2370,17 @@ function normalizeRemoteBusinessKoroPayload(rawItems: any[]): BusinessKoroCatalo
         const vSize = String(v.size || v.attribute_size || '').trim();
         const vColor = String(v.color || v.colour || v.attribute_color || '').trim();
         if (!vSize && !vColor) continue;
-        const vSku = String(v.sku || `${sku}-V${vIdx + 1}`)
-          .trim()
-          .toUpperCase();
+        const vInStock = v.inStock !== false;
+        const vStock = !vInStock
+          ? 0
+          : Math.max(0, Number(v.stockQuantity ?? v.stock_quantity ?? v.stock ?? 20) || 20);
+        const vSku = `${sku}-V${vIdx + 1}`;
         variants.push({
           sku: vSku,
           size: vSize,
           color: vColor,
           priceAdjustmentBdt: Number(v.price_adjustment ?? v.priceAdjustmentBdt ?? 0) || 0,
-          stockQuantity: Math.max(0, Number(v.stock_quantity ?? v.stock ?? 15) || 15),
+          stockQuantity: vStock,
         });
       }
     }
@@ -2337,23 +2389,26 @@ function normalizeRemoteBusinessKoroPayload(rawItems: any[]): BusinessKoroCatalo
     const rawDescBn = String(item.description_bn || item.description || nameBn).trim();
 
     normalized.push({
+      bkrProductId,
       sku,
       name,
       nameBn,
-      categorySlug: catSlug,
-      categoryName: catName,
-      categoryNameBn: catNameBn,
-      wholesalePriceBdt: wholesalePrice,
+      categorySlug: mappedCat.slug,
+      categoryName: mappedCat.name,
+      categoryNameBn: mappedCat.nameBn,
+      wholesalePriceBdt: costPrice,
+      minSellingPriceBdt: minSellingPrice,
+      suggestedSellingPriceBdt: suggestedSelling,
       suggestedRetailPriceBdt: suggestedRetail,
       stockQuantity: stockQty,
       description: sanitizeCustomerProductText(rawDesc) || rawDesc,
       descriptionBn: sanitizeCustomerProductText(rawDescBn) || rawDescBn,
       imageUrl: primaryImg,
       galleryMedia,
-      isFeatured: Boolean(item.is_featured ?? true),
-      isNewArrival: Boolean(item.is_new ?? true),
-      isBestSeller: Boolean(item.is_best_seller ?? false),
-      isSpecialOffer: Boolean(item.is_offer ?? true),
+      isFeatured: i < 12,
+      isNewArrival: i < 18,
+      isBestSeller: i % 2 === 0,
+      isSpecialOffer: suggestedRetail > suggestedSelling,
       offerBadgeText: '🔥 বিশেষ অফার',
       variants,
     });
@@ -2363,12 +2418,7 @@ function normalizeRemoteBusinessKoroPayload(rawItems: any[]): BusinessKoroCatalo
 
 export async function getBusinessKoroSyncStatus() {
   await ensureStoreInitialized();
-  const rawKey = (process.env.BUSINESSKORO_API_KEY || '').trim();
-  const hasServerApiKey =
-    rawKey.length > 4 && rawKey !== 'your_businesskoro_reseller_api_key';
-  const endpointUrl =
-    (process.env.BUSINESSKORO_API_URL || '').trim() ||
-    'https://businesskoro.com/api/v1/products';
+  const cfg = getBusinessKoroConfig();
 
   const [allProds, allLogs] = await Promise.all([
     db.select().from(products),
@@ -2381,16 +2431,16 @@ export async function getBusinessKoroSyncStatus() {
   const lastSyncLog = allLogs.find((l) => l.action === 'BUSINESSKORO_SYNC');
 
   return {
-    hasServerApiKey,
-    endpointUrl,
+    hasServerApiKey: Boolean(cfg.apiKey),
+    endpointUrl: cfg.productsUrl,
     syncedProductsCount: syncedProducts.length,
-    catalogFeedAvailableCount: getBuiltInBusinessKoroFeed().length,
+    catalogFeedAvailableCount: Math.max(54, syncedProducts.length),
     lastSyncAt: lastSyncLog?.createdAt || null,
     lastSyncDetails: lastSyncLog?.details || null,
   };
 }
 
-export async function syncBusinessKoroProducts(
+async function syncBusinessKoroProductsInternal(
   adminEmail: string,
   adminUid: string,
   options: {
@@ -2398,78 +2448,108 @@ export async function syncBusinessKoroProducts(
     fixedMarkupBdt?: number;
     autoPublish?: boolean;
     updateExistingPrices?: boolean;
+    restoreDeleted?: boolean;
   }
 ) {
-  await ensureStoreInitialized();
-  const markupPct = Math.max(0, Math.min(300, Number(options.markupPercentage ?? 25)));
+  const markupPct = Math.max(0, Math.min(300, Number(options.markupPercentage ?? 0)));
   const fixedMarkup = Math.max(0, Number(options.fixedMarkupBdt ?? 0));
   const autoPublish = options.autoPublish !== false;
   const updateExistingPrices = options.updateExistingPrices !== false;
+  const restoreDeleted = Boolean(options.restoreDeleted);
 
-  const rawKey = (process.env.BUSINESSKORO_API_KEY || '').trim();
-  const hasServerApiKey =
-    rawKey.length > 4 && rawKey !== 'your_businesskoro_reseller_api_key';
-  const endpointUrl =
-    (process.env.BUSINESSKORO_API_URL || '').trim() ||
-    'https://businesskoro.com/api/v1/products';
-
+  const cfg = getBusinessKoroConfig();
   let catalogItems: BusinessKoroCatalogItem[] = [];
   let syncMode: 'LIVE_API' | 'VERIFIED_RESELLER_FEED' = 'VERIFIED_RESELLER_FEED';
   let remoteNotice = '';
+  let insideDhakaCharge = 70;
+  let outsideDhakaCharge = 130;
 
-  if (hasServerApiKey) {
-    try {
-      const separator = endpointUrl.includes('?') ? '&' : '?';
-      const urlWithParam = `${endpointUrl}${separator}per_page=100`;
-      const response = await fetch(urlWithParam, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${rawKey}`,
-          'X-API-Key': rawKey,
-          'X-BusinessKoro-Key': rawKey,
-          Accept: 'application/json',
-          'User-Agent': 'BoichitraBD-Storefront-Sync/1.0',
-        },
-        signal: AbortSignal.timeout(10000),
-      });
+  try {
+    const response = await fetch(cfg.productsUrl, {
+      method: 'GET',
+      headers: getBusinessKoroHeaders(cfg.apiKey, cfg.domain),
+      signal: AbortSignal.timeout(12000),
+    });
 
-      if (response.ok) {
-        const json: any = await response.json();
-        const rawList = Array.isArray(json)
-          ? json
-          : Array.isArray(json?.data)
-          ? json.data
-          : Array.isArray(json?.products)
-          ? json.products
-          : Array.isArray(json?.items)
-          ? json.items
-          : [];
-        const parsed = normalizeRemoteBusinessKoroPayload(rawList);
-        if (parsed.length > 0) {
-          catalogItems = parsed;
-          syncMode = 'LIVE_API';
-        } else {
-          remoteNotice =
-            'লাইভ এপিআই থেকে খালি তালিকা পাওয়া গেছে, তাই ভেরিফাইড বিজনেস করো রিসেলার ফিড সিঙ্ক করা হয়েছে।';
-        }
-      } else {
-        remoteNotice = `লাইভ এপিআই HTTP ${response.status} রিটার্ন করেছে, তাই ভেরিফাইড বিজনেস করো রিসেলার ক্যাটালগ ফিড সিঙ্ক করা হয়েছে।`;
+    if (response.ok) {
+      const json: any = await response.json();
+      if (json?.deliveryCharges) {
+        insideDhakaCharge = Number(json.deliveryCharges.insideDhaka) || 70;
+        outsideDhakaCharge = Number(json.deliveryCharges.outsideDhaka) || 130;
       }
-    } catch (err: any) {
-      remoteNotice =
-        'লাইভ এপিআই সংযোগে সাড়া পাওয়া যায়নি, তাই ভেরিফাইড বিজনেস করো রিসেলার ক্যাটালগ ফিড সিঙ্ক করা হয়েছে।';
+      const rawList = Array.isArray(json)
+        ? json
+        : Array.isArray(json?.data)
+        ? json.data
+        : Array.isArray(json?.products)
+        ? json.products
+        : [];
+      const parsed = normalizeRemoteBusinessKoroPayload(rawList);
+      if (parsed.length > 0) {
+        catalogItems = parsed;
+        syncMode = 'LIVE_API';
+      }
+    } else {
+      remoteNotice = `লাইভ এপিআই HTTP ${response.status} রিটার্ন করেছে।`;
     }
+  } catch (err: any) {
+    remoteNotice = 'লাইভ এপিআই সংযোগে সাড়া পাওয়া যায়নি।';
   }
 
   if (catalogItems.length === 0) {
-    catalogItems = getBuiltInBusinessKoroFeed();
-    syncMode = 'VERIFIED_RESELLER_FEED';
+    throw new Error(remoteNotice || 'BusinessKoro API থেকে পণ্য লোড করা যায়নি।');
   }
 
   return await db.transaction(async (tx) => {
+    // Update delivery charges from BusinessKoro if present
+    const allSettings = await tx.select().from(storeSettings);
+    if (allSettings[0]) {
+      await tx
+        .update(storeSettings)
+        .set({
+          sylhetDeliveryBdt: insideDhakaCharge,
+          outsideSylhetDeliveryBdt: outsideDhakaCharge,
+        })
+        .where(eq(storeSettings.id, allSettings[0].id));
+    }
+
+    // Hide initial demo SKUs when real BusinessKoro products arrive
+    const demoSkus = new Set([
+      'BBD-HD-101',
+      'BBD-GD-201',
+      'BBD-WT-301',
+      'BBD-PJ-401',
+      'BBD-GD-202',
+      'BBD-BG-501',
+      'BBD-GD-203',
+      'BBD-FS-102',
+      'BBD-BK-101',
+      'BBD-BK-102',
+      'BBD-BK-201',
+      'BBD-BK-202',
+      'BBD-BK-301',
+      'BBD-BK-401',
+    ]);
+
     const existingCats = await tx.select().from(categories);
     const existingProds = await tx.select().from(products);
     const existingVars = await tx.select().from(productVariants);
+    const deletedLogs = await tx
+      .select()
+      .from(auditLogs)
+      .where(eq(auditLogs.action, 'DELETE_PRODUCT'));
+    const deletedSkuSet = new Set(
+      deletedLogs.map((l) => (l.entityId || '').trim().toUpperCase())
+    );
+
+    for (const ep of existingProds) {
+      if (demoSkus.has(ep.sku.toUpperCase()) && ep.isPublished) {
+        await tx
+          .update(products)
+          .set({ isPublished: false })
+          .where(eq(products.id, ep.id));
+      }
+    }
 
     const catBySlug = new Map(existingCats.map((c) => [c.slug.toLowerCase(), c]));
     const prodBySku = new Map(existingProds.map((p) => [p.sku.toUpperCase(), p]));
@@ -2486,7 +2566,9 @@ export async function syncBusinessKoroProducts(
     const now = new Date();
 
     for (const item of catalogItems) {
-      // 1. Resolve or create Category
+      if (!restoreDeleted && deletedSkuSet.has(item.sku.toUpperCase())) {
+        continue;
+      }
       let cat = catBySlug.get(item.categorySlug.toLowerCase());
       if (!cat) {
         const insertedCat = await tx
@@ -2496,7 +2578,7 @@ export async function syncBusinessKoroProducts(
             nameBn: item.categoryNameBn,
             slug: item.categorySlug.toLowerCase(),
             description: `${item.categoryNameBn} — প্রিমিয়াম কালেকশন`,
-            sortOrder: existingCats.length + 1,
+            sortOrder: catBySlug.size + 1,
             isActive: true,
           })
           .returning();
@@ -2504,17 +2586,22 @@ export async function syncBusinessKoroProducts(
         catBySlug.set(cat.slug.toLowerCase(), cat);
       }
 
-      // 2. Calculate Reseller Sale Price & Regular Price based on wholesale + markup
-      const calculatedSalePrice = Math.round(
-        item.wholesalePriceBdt * (1 + markupPct / 100) + fixedMarkup
-      );
+      const minPrice = item.minSellingPriceBdt || item.wholesalePriceBdt;
+      const baseSellingPrice =
+        markupPct > 0
+          ? Math.max(
+              item.suggestedSellingPriceBdt,
+              Math.round(item.wholesalePriceBdt * (1 + markupPct / 100))
+            )
+          : item.suggestedSellingPriceBdt;
+      const calculatedSalePrice = Math.max(minPrice, baseSellingPrice + fixedMarkup);
       const regularPrice = Math.max(
         calculatedSalePrice + 150,
         item.suggestedRetailPriceBdt,
         Math.round(calculatedSalePrice * 1.18)
       );
 
-      const serializedGallery = serializeProductGalleryAndOffer(
+      const baseSerialized = serializeProductGalleryAndOffer(
         item.galleryMedia.map((gm, idx) => ({
           id: `${item.sku}-media-${idx + 1}`,
           type: gm.type,
@@ -2528,6 +2615,14 @@ export async function syncBusinessKoroProducts(
           promoCouponCode: '',
         }
       );
+      let galleryPayloadObj: any = {};
+      try {
+        galleryPayloadObj = JSON.parse(baseSerialized);
+      } catch (_e) {}
+      galleryPayloadObj.bkrProductId = item.bkrProductId || '';
+      galleryPayloadObj.bkrMinPrice = minPrice;
+      galleryPayloadObj.bkrCostPrice = item.wholesalePriceBdt;
+      const serializedGallery = JSON.stringify(galleryPayloadObj);
 
       const cleanSku = item.sku.trim().toUpperCase();
       const existingProd = prodBySku.get(cleanSku);
@@ -2546,7 +2641,7 @@ export async function syncBusinessKoroProducts(
             priceBdt: updateExistingPrices ? regularPrice : existingProd.priceBdt,
             salePriceBdt: updateExistingPrices ? calculatedSalePrice : existingProd.salePriceBdt,
             stockQuantity: item.stockQuantity,
-            imageUrl: existingProd.imageUrl || item.imageUrl,
+            imageUrl: item.imageUrl || existingProd.imageUrl,
             galleryUrlsJson: serializedGallery,
             isPublished: autoPublish ? true : existingProd.isPublished,
             updatedAt: now,
@@ -2592,7 +2687,6 @@ export async function syncBusinessKoroProducts(
         createdCount++;
       }
 
-      // 3. Sync Color & Size Variants for this product
       const currentVars = varsByProductId.get(productId) || [];
       for (const v of item.variants) {
         const vSku = v.sku.trim().toUpperCase();
@@ -2623,9 +2717,7 @@ export async function syncBusinessKoroProducts(
       }
     }
 
-    const summaryDetails = `Mode: ${syncMode} | Markup: +${markupPct}% ${
-      fixedMarkup > 0 ? `+ ৳${fixedMarkup}` : ''
-    } | Created: ${createdCount}, Updated: ${updatedCount}, Variants: ${variantsSyncedCount}`;
+    const summaryDetails = `Mode: ${syncMode} | Products: ${catalogItems.length} (Created: ${createdCount}, Updated: ${updatedCount}, Variants: ${variantsSyncedCount})`;
 
     await tx.insert(auditLogs).values({
       actorEmail: adminEmail,
@@ -2648,5 +2740,110 @@ export async function syncBusinessKoroProducts(
       message: `Business Koro থেকে মোট ${catalogItems.length}টি পণ্য (${createdCount}টি নতুন, ${updatedCount}টি আপডেট) এবং ${variantsSyncedCount}টি কালার/সাইজ ভ্যারিয়েন্ট সফলভাবে আপনার স্টোরে অটো-সিঙ্ক হয়েছে!`,
     };
   });
+}
+
+export async function syncBusinessKoroProducts(
+  adminEmail: string,
+  adminUid: string,
+  options: {
+    markupPercentage?: number;
+    fixedMarkupBdt?: number;
+    autoPublish?: boolean;
+    updateExistingPrices?: boolean;
+    restoreDeleted?: boolean;
+  }
+) {
+  await ensureStoreInitialized();
+  return syncBusinessKoroProductsInternal(adminEmail, adminUid, options);
+}
+
+async function forwardOrderToBusinessKoro(
+  orderRecord: typeof orders.$inferSelect,
+  verifiedItems: Array<{
+    product: typeof products.$inferSelect;
+    variant: typeof productVariants.$inferSelect | null;
+    quantity: number;
+    unitPriceBdt: number;
+    lineTotalBdt: number;
+    variantLabel: string;
+  }>,
+  input: GuestCheckoutInput,
+  normalizedPhone: string
+) {
+  const cfg = getBusinessKoroConfig();
+  if (!cfg.apiKey) return;
+
+  const districtObj = BANGLADESH_DISTRICTS.find(
+    (d) => d.name.toLowerCase() === input.district.trim().toLowerCase()
+  );
+  const customerDivision = (districtObj?.division || 'Dhaka').slice(0, 100);
+  const customerDistrict = (input.district.trim() || 'Dhaka').slice(0, 100);
+  const rawArea = input.upazila.split('(')[0].trim() || input.upazila.trim() || customerDistrict;
+  const customerArea = rawArea.slice(0, 100);
+
+  for (const item of verifiedItems) {
+    let bkrProductId = '';
+    let bkrMinPrice = 0;
+    try {
+      const parsed = JSON.parse(item.product.galleryUrlsJson || '{}');
+      bkrProductId = String(parsed.bkrProductId || '').trim();
+      bkrMinPrice = Number(parsed.bkrMinPrice || parsed.bkrMinimumSellingPrice || 0);
+    } catch (_e) {}
+
+    if (!bkrProductId) continue;
+
+    const sellingPrice = Math.max(
+      1,
+      bkrMinPrice * item.quantity,
+      Number(item.lineTotalBdt) || Number(item.unitPriceBdt)
+    );
+
+    const noteParts = [
+      `Order: ${orderRecord.orderNumber}`,
+      item.variantLabel !== 'Standard' ? `Variant: ${item.variantLabel}` : '',
+      item.quantity > 1 ? `Qty: ${item.quantity}` : '',
+      input.orderNote?.trim() || '',
+    ].filter(Boolean);
+
+    const payload = {
+      productId: bkrProductId,
+      customerName: input.fullName.trim().slice(0, 120),
+      customerPhone: normalizedPhone,
+      customerAddress: `${input.addressLine.trim()}, ${input.upazila.trim()}, ${input.district.trim()}`.slice(0, 500),
+      customerDivision,
+      customerDistrict,
+      customerArea,
+      sellingPrice,
+      deliveryChargePaidByCustomer: true,
+      customerNote: noteParts.join(' | ').slice(0, 500),
+    };
+
+    try {
+      const res = await fetch(cfg.ordersUrl, {
+        method: 'POST',
+        headers: getBusinessKoroHeaders(cfg.apiKey, cfg.domain),
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(10000),
+      });
+      const respText = await res.text();
+      await db.insert(auditLogs).values({
+        actorEmail: 'system@boichitrabd.com',
+        actorUid: 'system',
+        action: 'BUSINESSKORO_ORDER_PUSH',
+        entityType: 'Order',
+        entityId: orderRecord.orderNumber,
+        details: `Product ${bkrProductId} -> HTTP ${res.status}: ${respText.slice(0, 220)}`,
+      });
+    } catch (err: any) {
+      await db.insert(auditLogs).values({
+        actorEmail: 'system@boichitrabd.com',
+        actorUid: 'system',
+        action: 'BUSINESSKORO_ORDER_PUSH_ERROR',
+        entityType: 'Order',
+        entityId: orderRecord.orderNumber,
+        details: `Failed to push ${bkrProductId}: ${err?.message || 'Network error'}`,
+      });
+    }
+  }
 }
 

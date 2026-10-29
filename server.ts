@@ -18,6 +18,8 @@ import {
   saveCouponAdmin,
   deleteCouponAdmin,
   saveProductAdmin,
+  deleteProductAdmin,
+  bulkDeleteProductsAdmin,
   trackOrderPublic,
   updateOrderAdmin,
   updateStoreSettingsAdmin,
@@ -399,6 +401,37 @@ app.post('/api/admin/products', requireAdminAuth, async (req: AuthRequest, res) 
   }
 });
 
+app.delete('/api/admin/products/:id', requireAdminAuth, async (req: AuthRequest, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id || id <= 0) {
+      return res.status(400).json({ error: 'অবৈধ পণ্যের আইডি।' });
+    }
+    const result = await deleteProductAdmin(
+      req.user?.email || 'admin',
+      req.user?.uid || 'admin',
+      id
+    );
+    res.json(result);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'পণ্যটি মুছে ফেলা যায়নি।' });
+  }
+});
+
+app.post('/api/admin/products/bulk-delete', requireAdminAuth, async (req: AuthRequest, res) => {
+  try {
+    const ids = Array.isArray(req.body?.productIds) ? req.body.productIds : [];
+    const result = await bulkDeleteProductsAdmin(
+      req.user?.email || 'admin',
+      req.user?.uid || 'admin',
+      ids
+    );
+    res.json(result);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'নির্বাচিত পণ্যগুলো মুছে ফেলা যায়নি।' });
+  }
+});
+
 app.post('/api/admin/coupons', requireAdminAuth, async (req: AuthRequest, res) => {
   try {
     const b = req.body || {};
@@ -555,10 +588,11 @@ app.post('/api/admin/businesskoro/sync', requireAdminAuth, async (req: AuthReque
       req.user?.uid || 'admin',
       {
         markupPercentage:
-          b.markupPercentage !== undefined ? Number(b.markupPercentage) : 25,
+          b.markupPercentage !== undefined ? Number(b.markupPercentage) : 0,
         fixedMarkupBdt: b.fixedMarkupBdt !== undefined ? Number(b.fixedMarkupBdt) : 0,
         autoPublish: b.autoPublish !== false,
         updateExistingPrices: b.updateExistingPrices !== false,
+        restoreDeleted: Boolean(b.restoreDeleted),
       }
     );
     res.json(result);

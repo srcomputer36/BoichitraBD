@@ -42,6 +42,17 @@
           },
           true
         );
+
+        try {
+          window.__BOICHITRA_STOREFRONT_PREFETCH__ = window
+            .fetch('/api/storefront')
+            .then(function (r) {
+              return r.ok ? r.json() : null;
+            })
+            .catch(function () {
+              return null;
+            });
+        } catch (_e) {}
       })();
     </script>
     <title>Boichitra BD — বৈচিত্র্য | Fashion, Gadget &amp; Everything</title>
