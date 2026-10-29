@@ -1,0 +1,9 @@
+---
+deployment:
+  tasks:
+    - export DEPLOYPATH=$HOME/public_html/
+    - /bin/mkdir -p $DEPLOYPATH
+    - /bin/cp -Rf dist/* $DEPLOYPATH
+    - /bin/cp -f dist/.htaccess $DEPLOYPATH/.htaccess
+    - /bin/cp -f dist/api.php $DEPLOYPATH/api.php
+    - /bin/chmod 644 $DEPLOYPATH/.htaccess $DEPLOYPATH/api.php $DEPLOYPATH/index.html

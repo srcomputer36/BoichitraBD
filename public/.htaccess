@@ -1,0 +1,24 @@
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # Pass Authorization header to PHP (required for Bearer token auth on cPanel Apache/LiteSpeed)
+  RewriteCond %{HTTP:Authorization} ^(.*)
+  RewriteRule .* - [E=HTTP_AUTHORIZATION:%1]
+
+  # Block direct public access to internal SQLite storage directory
+  RewriteRule ^boichitra_storage/ - [F,L]
+
+  # Route all /api/* requests, /robots.txt, and /sitemap.xml to api.php
+  RewriteRule ^api/(.*)$ api.php [QSA,L]
+  RewriteRule ^robots\.txt$ api.php [QSA,L]
+  RewriteRule ^sitemap\.xml$ api.php [QSA,L]
+
+  # Serve existing static files (JS, CSS, images, fonts) directly
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # Route all other SPA paths (e.g. /admin) to index.html
+  RewriteRule ^ index.html [L]
+</IfModule>

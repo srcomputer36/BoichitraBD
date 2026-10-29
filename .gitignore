@@ -1,0 +1,10 @@
+node_modules/
+build/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+boichitra_storage/
+public/boichitra_storage/
+dist/boichitra_storage/
