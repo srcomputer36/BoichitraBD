@@ -10,6 +10,7 @@ export interface ProductOfferMeta {
   offerEndsAt?: string;
   dealNote?: string;
   promoCouponCode?: string;
+  freeDelivery?: boolean;
 }
 
 export interface ProductVariant {

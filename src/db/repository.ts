@@ -1129,8 +1129,16 @@ export async function createGuestOrder(input: GuestCheckoutInput) {
       const outsideDhakaCharge = settings?.outsideSylhetDeliveryBdt ?? 120;
       const freeThreshold = settings?.freeDeliveryThresholdBdt ?? 3000;
 
+      const hasFreeDeliveryProduct = verifiedItems.some((vi) => {
+        const parsed = parseProductGalleryAndOffer(vi.product);
+        return Boolean(parsed.offerMeta.freeDelivery);
+      });
+
       let deliveryChargeBdt = isInsideDhaka ? insideDhakaCharge : outsideDhakaCharge;
-      if (freeThreshold > 0 && subtotalBdt - discountBdt >= freeThreshold) {
+      if (
+        hasFreeDeliveryProduct ||
+        (freeThreshold > 0 && subtotalBdt - discountBdt >= freeThreshold)
+      ) {
         deliveryChargeBdt = 0;
       }
 
@@ -2669,14 +2677,16 @@ async function syncBusinessKoroProductsInternal(
   }
 
   return await db.transaction(async (tx) => {
-    // Update delivery charges from BusinessKoro if present
+    // Update delivery charges from BusinessKoro only if admin has not explicitly set them to 0 (Free Delivery)
     const allSettings = await tx.select().from(storeSettings);
     if (allSettings[0]) {
+      const currentInside = allSettings[0].sylhetDeliveryBdt;
+      const currentOutside = allSettings[0].outsideSylhetDeliveryBdt;
       await tx
         .update(storeSettings)
         .set({
-          sylhetDeliveryBdt: insideDhakaCharge,
-          outsideSylhetDeliveryBdt: outsideDhakaCharge,
+          sylhetDeliveryBdt: currentInside === 0 ? 0 : insideDhakaCharge,
+          outsideSylhetDeliveryBdt: currentOutside === 0 ? 0 : outsideDhakaCharge,
         })
         .where(eq(storeSettings.id, allSettings[0].id));
     }
@@ -2821,6 +2831,17 @@ async function syncBusinessKoroProductsInternal(
       const cleanSku = item.sku.trim().toUpperCase();
       const existingProd = prodBySku.get(cleanSku);
 
+      if (existingProd) {
+        const existingParsed = parseProductGalleryAndOffer(existingProd);
+        if (existingParsed.offerMeta.freeDelivery) {
+          galleryPayloadObj.offer = {
+            ...(galleryPayloadObj.offer || {}),
+            freeDelivery: true,
+          };
+        }
+      }
+      const finalSerializedGallery = JSON.stringify(galleryPayloadObj);
+
       let productId: number;
 
       if (existingProd) {
@@ -2836,7 +2857,7 @@ async function syncBusinessKoroProductsInternal(
             salePriceBdt: updateExistingPrices ? calculatedSalePrice : existingProd.salePriceBdt,
             stockQuantity: item.stockQuantity,
             imageUrl: item.imageUrl || existingProd.imageUrl,
-            galleryUrlsJson: serializedGallery,
+            galleryUrlsJson: finalSerializedGallery,
             isFeatured: Boolean(item.isFeatured),
             isNewArrival: Boolean(item.isNewArrival),
             isBestSeller: Boolean(item.isBestSeller),

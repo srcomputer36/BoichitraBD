@@ -1385,7 +1385,18 @@ if ($requestUri === '/api/orders/checkout' && $method === 'POST') {
     // Delivery charge
     $isInsideDhaka = strtolower($district) === 'dhaka';
     $deliveryChargeBdt = $isInsideDhaka ? $settings['sylhetDeliveryBdt'] : $settings['outsideSylhetDeliveryBdt'];
-    if ($settings['freeDeliveryThresholdBdt'] > 0 && ($subtotalBdt - $discountBdt) >= $settings['freeDeliveryThresholdBdt']) {
+    $hasFreeDeliveryItem = false;
+    foreach ($verifiedItems as $vi) {
+      $gRaw = json_decode($vi['product']['gallery_urls_json'] ?? '{}', true);
+      if (is_array($gRaw)) {
+        $offerObj = $gRaw['offer'] ?? $gRaw['offerMeta'] ?? [];
+        if (!empty($offerObj['freeDelivery'])) {
+          $hasFreeDeliveryItem = true;
+          break;
+        }
+      }
+    }
+    if ($hasFreeDeliveryItem || ($settings['freeDeliveryThresholdBdt'] > 0 && ($subtotalBdt - $discountBdt) >= $settings['freeDeliveryThresholdBdt'])) {
       $deliveryChargeBdt = 0;
     }
 
@@ -2323,8 +2334,12 @@ function runBusinessKoroCatalogSync(
     throw new Exception($remoteNotice ?: 'BusinessKoro API থেকে পণ্য লোড করা যায়নি।');
   }
 
+  // Preserve 0 delivery charge if admin explicitly enabled Free Delivery
+  $curSettings = getStoreSettings($pdo);
+  $newInsideDhaka = ((int)$curSettings['sylhetDeliveryBdt'] === 0) ? 0 : $insideDhaka;
+  $newOutsideDhaka = ((int)$curSettings['outsideSylhetDeliveryBdt'] === 0) ? 0 : $outsideDhaka;
   $pdo->prepare("UPDATE store_settings SET sylhet_delivery_bdt = ?, outside_sylhet_delivery_bdt = ?, updated_at = ?")
-      ->execute([$insideDhaka, $outsideDhaka, $now]);
+      ->execute([$newInsideDhaka, $newOutsideDhaka, $now]);
 
   // Unpublish initial demo SKUs when real BusinessKoro catalog arrives
   $pdo->exec("UPDATE products SET is_published = 0 WHERE UPPER(sku) IN ('BBD-HD-101','BBD-GD-201','BBD-WT-301','BBD-PJ-401','BBD-GD-202','BBD-BG-501','BBD-GD-203','BBD-FS-102','BBD-BK-101','BBD-BK-102','BBD-BK-201','BBD-BK-202','BBD-BK-301','BBD-BK-401')");
@@ -2388,6 +2403,15 @@ function runBusinessKoroCatalogSync(
     $exProd = $stmtProd->fetch();
 
     if ($exProd) {
+      $exGallery = json_decode($exProd['gallery_urls_json'] ?? '{}', true);
+      $exOffer = is_array($exGallery) ? ($exGallery['offer'] ?? $exGallery['offerMeta'] ?? []) : [];
+      if (!empty($exOffer['freeDelivery'])) {
+        $gDecoded = json_decode($galleryJson, true);
+        if (is_array($gDecoded)) {
+          $gDecoded['offer']['freeDelivery'] = true;
+          $galleryJson = json_encode($gDecoded, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        }
+      }
       $pid = (int)$exProd['id'];
       $newReg = $updateExistingPrices ? $regPrice : (int)$exProd['price_bdt'];
       $newSale = $updateExistingPrices ? $salePrice : (int)$exProd['sale_price_bdt'];

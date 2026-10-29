@@ -108,6 +108,7 @@ export interface ParsedOfferMeta {
   offerEndsAt?: string;
   dealNote?: string;
   promoCouponCode?: string;
+  freeDelivery?: boolean;
 }
 
 export function isLikelyVideoUrl(url: string): boolean {
@@ -286,6 +287,7 @@ export function parseProductGalleryAndOffer(product: {
             offerEndsAt: rawOfferObj.offerEndsAt || '',
             dealNote: sanitizeCustomerDealNote(rawOfferObj.dealNote || ''),
             promoCouponCode: rawOfferObj.promoCouponCode || '',
+            freeDelivery: Boolean(rawOfferObj.freeDelivery),
           };
         }
       }
@@ -341,6 +343,9 @@ export function serializeProductGalleryAndOffer(
   if (cleanDealNote) cleanedOffer.dealNote = cleanDealNote;
   if (offerMeta?.promoCouponCode?.trim())
     cleanedOffer.promoCouponCode = offerMeta.promoCouponCode.trim().toUpperCase();
+  if (offerMeta?.freeDelivery) {
+    cleanedOffer.freeDelivery = true;
+  }
 
   return JSON.stringify({
     media: cleanedMedia,
@@ -835,6 +840,24 @@ export async function copyTextToClipboard(text: string): Promise<boolean> {
   }
   return false;
 }
+
+export function trackMetaPixelEvent(
+  eventName: 'PageView' | 'ViewContent' | 'AddToCart' | 'InitiateCheckout' | 'Purchase',
+  params?: Record<string, any>
+): void {
+  try {
+    if (typeof window !== 'undefined' && typeof (window as any).fbq === 'function') {
+      if (params && Object.keys(params).length > 0) {
+        (window as any).fbq('track', eventName, params);
+      } else {
+        (window as any).fbq('track', eventName);
+      }
+    }
+  } catch {
+    // Never let analytics block user interaction
+  }
+}
+
 
 
 

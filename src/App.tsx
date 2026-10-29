@@ -57,6 +57,7 @@ import {
   getColorSwatchHex,
   buildProductPromoUrl,
   copyTextToClipboard,
+  trackMetaPixelEvent,
 } from './lib/visuals.ts';
 import { ProductCard, ResilientProductImage } from './components/ProductVisualCard.tsx';
 
@@ -429,17 +430,34 @@ export default function App() {
 
   const totalDiscountBdt = discountBdt + activeQrDiscountBdt;
 
+  const hasFreeDeliveryItemInCart = useMemo(
+    () =>
+      cart.some(
+        (item) => parseProductGalleryAndOffer(item.product).offerMeta.freeDelivery === true
+      ),
+    [cart]
+  );
+
   const deliveryChargeBdt = useMemo(() => {
     if (cart.length === 0) return 0;
+    if (hasFreeDeliveryItemInCart) return 0;
     const freeThreshold = settings?.freeDeliveryThresholdBdt ?? 3000;
     if (freeThreshold > 0 && cartSubtotalBdt - totalDiscountBdt >= freeThreshold) {
       return 0;
     }
     const isInsideDhaka = selectedDistrict.toLowerCase() === 'dhaka';
-    return isInsideDhaka
+    const rawCharge = isInsideDhaka
       ? settings?.sylhetDeliveryBdt ?? 60
       : settings?.outsideSylhetDeliveryBdt ?? 120;
-  }, [cart.length, settings, cartSubtotalBdt, totalDiscountBdt, selectedDistrict]);
+    return Math.max(0, Number(rawCharge));
+  }, [
+    cart.length,
+    hasFreeDeliveryItemInCart,
+    settings,
+    cartSubtotalBdt,
+    totalDiscountBdt,
+    selectedDistrict,
+  ]);
 
   const finalTotalBdt = Math.max(
     0,
@@ -462,6 +480,17 @@ export default function App() {
     setPdpQuantity(1);
     setActiveMediaIdx(0);
     setCopiedPdpLinkType(null);
+    const effectivePrice =
+      product.salePriceBdt && product.salePriceBdt < product.priceBdt
+        ? product.salePriceBdt
+        : product.priceBdt;
+    trackMetaPixelEvent('ViewContent', {
+      content_ids: [product.sku || String(product.id)],
+      content_name: product.nameBn || product.name,
+      content_type: 'product',
+      value: effectivePrice,
+      currency: 'BDT',
+    });
     try {
       const slugOrSku = product.slug || product.sku;
       if (slugOrSku) {
@@ -543,7 +572,26 @@ export default function App() {
       `IDEMP-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
     );
 
+    const basePrice =
+      product.salePriceBdt && product.salePriceBdt < product.priceBdt
+        ? product.salePriceBdt
+        : product.priceBdt;
+    const unitVal = basePrice + (variant ? variant.priceAdjustmentBdt : 0);
+    trackMetaPixelEvent('AddToCart', {
+      content_ids: [product.sku || String(product.id)],
+      content_name: product.nameBn || product.name,
+      content_type: 'product',
+      value: unitVal * qty,
+      currency: 'BDT',
+    });
+
     if (openCheckoutDirectly) {
+      trackMetaPixelEvent('InitiateCheckout', {
+        content_ids: [product.sku || String(product.id)],
+        num_items: qty,
+        value: unitVal * qty,
+        currency: 'BDT',
+      });
       setActiveProduct(null);
       setCheckoutStep('checkout');
       setIsCartOpen(true);
@@ -721,6 +769,14 @@ export default function App() {
       if (!res.ok) {
         throw new Error(data.error || 'অর্ডার সম্পন্ন করা যায়নি।');
       }
+
+      trackMetaPixelEvent('Purchase', {
+        value: Number(data?.order?.totalBdt ?? finalTotalBdt),
+        currency: 'BDT',
+        content_ids: cart.map((item) => item.product.sku || String(item.product.id)),
+        content_type: 'product',
+        num_items: cartItemCount,
+      });
 
       setConfirmedOrderData(data);
       setCart([]);
@@ -939,8 +995,24 @@ export default function App() {
           {/* Delivery Trust Info & Mobile Track Button */}
           <div className="flex items-center gap-4 text-xs text-slate-600 tabular-nums">
             <span className="hidden md:inline">
-              ঢাকার ভিতরে ডেলিভারি <strong>{formatBdt(settings?.sylhetDeliveryBdt ?? 60)}</strong> · ঢাকার বাইরে{' '}
-              <strong>{formatBdt(settings?.outsideSylhetDeliveryBdt ?? 120)}</strong>
+              {settings?.sylhetDeliveryBdt === 0 && settings?.outsideSylhetDeliveryBdt === 0 ? (
+                <strong className="text-[#006A4E]">🚚 সকল অর্ডারে সম্পূর্ণ ফ্রি ডেলিভারি!</strong>
+              ) : (
+                <>
+                  ঢাকার ভিতরে ডেলিভারি{' '}
+                  <strong>
+                    {settings?.sylhetDeliveryBdt === 0
+                      ? 'ফ্রি (৳০)'
+                      : formatBdt(settings?.sylhetDeliveryBdt ?? 60)}
+                  </strong>{' '}
+                  · ঢাকার বাইরে{' '}
+                  <strong>
+                    {settings?.outsideSylhetDeliveryBdt === 0
+                      ? 'ফ্রি (৳০)'
+                      : formatBdt(settings?.outsideSylhetDeliveryBdt ?? 120)}
+                  </strong>
+                </>
+              )}
             </span>
             <button
               type="button"
@@ -1448,6 +1520,10 @@ export default function App() {
                   <ProductCard
                     key={product.id}
                     product={product}
+                    storeFreeDelivery={
+                      settings?.sylhetDeliveryBdt === 0 &&
+                      settings?.outsideSylhetDeliveryBdt === 0
+                    }
                     onSelect={(prod, chosenVar) => openProductDetail(prod, chosenVar)}
                     onSelectCategory={(catId) => handleSelectCategory(catId, true)}
                     onQuickAdd={(prod, chosenVar) => {
@@ -1822,10 +1898,24 @@ export default function App() {
 
                     <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 text-xs text-slate-600 space-y-1.5 tabular-nums">
                       <div className="font-semibold text-[#14213D]">ডেলিভারি ও পেমেন্ট তথ্য:</div>
-                      <div>
-                        · ঢাকার ভিতরে ডেলিভারি চার্জ {formatBdt(settings?.sylhetDeliveryBdt ?? 60)}, ঢাকার বাইরে{' '}
-                        {formatBdt(settings?.outsideSylhetDeliveryBdt ?? 120)}
-                      </div>
+                      {parseProductGalleryAndOffer(activeProduct).offerMeta.freeDelivery ||
+                      (settings?.sylhetDeliveryBdt === 0 &&
+                        settings?.outsideSylhetDeliveryBdt === 0) ? (
+                        <div className="text-[#006A4E] font-bold">
+                          · 🚚 এই পণ্যে সারাদেশে সম্পূর্ণ ফ্রি ডেলিভারি (ডেলিভারি চার্জ ৳০)!
+                        </div>
+                      ) : (
+                        <div>
+                          · ঢাকার ভিতরে ডেলিভারি চার্জ{' '}
+                          {settings?.sylhetDeliveryBdt === 0
+                            ? 'ফ্রি (৳০)'
+                            : formatBdt(settings?.sylhetDeliveryBdt ?? 60)}
+                          , ঢাকার বাইরে{' '}
+                          {settings?.outsideSylhetDeliveryBdt === 0
+                            ? 'ফ্রি (৳০)'
+                            : formatBdt(settings?.outsideSylhetDeliveryBdt ?? 120)}
+                        </div>
+                      )}
                       <div>· ক্যাশ অন ডেলিভারি অথবা বাংলা কিউআর (Bangla QR) পেমেন্ট</div>
                       {getBanglaQrDiscountBadgeText(settings) && (
                         <div className="mt-2 p-2.5 rounded-lg bg-emerald-50 border border-emerald-300 text-[#006A4E] text-xs sm:text-sm font-extrabold flex items-center gap-2">
@@ -1841,6 +1931,13 @@ export default function App() {
               {/* Right: Contiguous Purchase Module */}
               <div className="space-y-4">
                 <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                  {(parseProductGalleryAndOffer(activeProduct).offerMeta.freeDelivery ||
+                    (settings?.sylhetDeliveryBdt === 0 &&
+                      settings?.outsideSylhetDeliveryBdt === 0)) && (
+                    <span className="px-2 py-0.5 rounded bg-[#006A4E] text-white font-bold text-[11px]">
+                      🚚 ফ্রি ডেলিভারি
+                    </span>
+                  )}
                   {activeProduct.isSpecialOffer && (
                     <span className="px-2 py-0.5 rounded bg-[#14213D] text-white font-bold text-[11px]">
                       {parseProductGalleryAndOffer(activeProduct).offerMeta.badgeText ||
@@ -3059,7 +3156,17 @@ export default function App() {
                 {checkoutStep === 'cart' ? (
                   <button
                     type="button"
-                    onClick={() => setCheckoutStep('checkout')}
+                    onClick={() => {
+                      trackMetaPixelEvent('InitiateCheckout', {
+                        content_ids: cart.map(
+                          (item) => item.product.sku || String(item.product.id)
+                        ),
+                        num_items: cartItemCount,
+                        value: finalTotalBdt,
+                        currency: 'BDT',
+                      });
+                      setCheckoutStep('checkout');
+                    }}
                     className="w-full py-3.5 bg-[#14213D] hover:bg-[#286F65] text-white font-semibold text-sm rounded-xl transition-colors flex items-center justify-center gap-2"
                   >
                     <span>চেকআউট করুন (Proceed to Checkout)</span>

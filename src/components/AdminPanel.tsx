@@ -177,6 +177,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     offerEndsAt: string;
     offerDealNote: string;
     offerPromoCoupon: string;
+    freeDelivery: boolean;
     variants: Array<{
       id?: number;
       sku: string;
@@ -211,6 +212,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     offerEndsAt: '',
     offerDealNote: 'সীমিত সময়ের বিশেষ ছাড় · ক্যাশ অন ডেলিভারি সুবিধা',
     offerPromoCoupon: 'SYLHET100',
+    freeDelivery: false,
     variants: [],
   });
 
@@ -754,6 +756,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       offerEndsAt: defaultEnds,
       offerDealNote: 'সীমিত সময়ের বিশেষ ছাড় · ক্যাশ অন ডেলিভারি সুবিধা',
       offerPromoCoupon: 'SYLHET100',
+      freeDelivery: false,
       variants: [],
     });
     setNewMediaUrl('');
@@ -796,6 +799,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       offerDealNote:
         parsed.offerMeta.dealNote || 'সীমিত সময়ের বিশেষ ছাড় · ক্যাশ অন ডেলিভারি সুবিধা',
       offerPromoCoupon: parsed.offerMeta.promoCouponCode || 'SYLHET100',
+      freeDelivery: Boolean(parsed.offerMeta.freeDelivery),
       variants: (prod.variants || []).map((v) => ({
         id: v.id,
         sku: v.sku,
@@ -972,6 +976,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           offerEndsAt: productForm.offerEndsAt,
           dealNote: productForm.offerDealNote,
           promoCouponCode: productForm.offerPromoCoupon,
+          freeDelivery: productForm.freeDelivery,
         }
       );
 
@@ -3073,6 +3078,82 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   স্টোর কনফিগারেশন ও ডেলিভারি চার্জ সেটিংস
                 </h3>
                 <form onSubmit={handleSaveSettings} className="space-y-4 text-xs">
+                  {/* Quick Free Delivery Control Box */}
+                  <div className="p-3.5 rounded-xl bg-emerald-50/80 border border-[#286F65]/30 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <span className="font-bold text-[#14213D] flex items-center gap-1.5">
+                        🚚 ফ্রি ডেলিভারি কুইক কন্ট্রোল (Free Delivery Setup)
+                      </span>
+                      {settings.sylhetDeliveryBdt === 0 &&
+                      settings.outsideSylhetDeliveryBdt === 0 ? (
+                        <span className="px-2.5 py-0.5 rounded-md bg-[#286F65] text-white font-bold text-[11px]">
+                          ✓ সকল অর্ডারে ফ্রি ডেলিভারি চালু আছে
+                        </span>
+                      ) : settings.sylhetDeliveryBdt === 0 ? (
+                        <span className="px-2.5 py-0.5 rounded-md bg-amber-600 text-white font-bold text-[11px]">
+                          ঢাকার ভিতরে ফ্রি ডেলিভারি চালু আছে
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="text-[11px] text-slate-600 leading-relaxed">
+                      আপনি চাইলে এক ক্লিকেই পুরো স্টোরের সব অর্ডারে ডেলিভারি চার্জ সম্পূর্ণ ফ্রি (৳০) করে দিতে পারেন, অথবা নিচের বক্সে পছন্দমতো চার্জ বসিয়ে Save করতে পারেন। এছাড়া নির্দিষ্ট কোনো পণ্যে ফ্রি ডেলিভারি দিতে চাইলে <strong>পণ্য ও স্টক</strong> ট্যাব থেকে পণ্যটি Edit করে <strong>&ldquo;🚚 ফ্রি ডেলিভারি&rdquo;</strong> টিক দিন।
+                    </p>
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSettings({
+                            ...settings,
+                            sylhetDeliveryBdt: 0,
+                            outsideSylhetDeliveryBdt: 0,
+                          })
+                        }
+                        className={`px-3 py-1.5 rounded-lg font-bold text-[11px] transition cursor-pointer ${
+                          settings.sylhetDeliveryBdt === 0 &&
+                          settings.outsideSylhetDeliveryBdt === 0
+                            ? 'bg-[#286F65] text-white shadow-sm'
+                            : 'bg-white text-[#286F65] border border-[#286F65]/40 hover:bg-emerald-100/50'
+                        }`}
+                      >
+                        ✓ সকল অর্ডারে ফ্রি ডেলিভারি (৳০)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSettings({
+                            ...settings,
+                            sylhetDeliveryBdt: 0,
+                            outsideSylhetDeliveryBdt:
+                              settings.outsideSylhetDeliveryBdt > 0
+                                ? settings.outsideSylhetDeliveryBdt
+                                : 130,
+                          })
+                        }
+                        className={`px-3 py-1.5 rounded-lg font-bold text-[11px] transition cursor-pointer ${
+                          settings.sylhetDeliveryBdt === 0 &&
+                          settings.outsideSylhetDeliveryBdt > 0
+                            ? 'bg-[#14213D] text-white shadow-sm'
+                            : 'bg-white text-[#14213D] border border-slate-300 hover:bg-slate-100'
+                        }`}
+                      >
+                        শুধুমাত্র ঢাকার ভিতরে ফ্রি (৳০)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSettings({
+                            ...settings,
+                            sylhetDeliveryBdt: 70,
+                            outsideSylhetDeliveryBdt: 130,
+                          })
+                        }
+                        className="px-3 py-1.5 rounded-lg font-semibold text-[11px] bg-white text-slate-700 border border-slate-300 hover:bg-slate-100 transition cursor-pointer"
+                      >
+                        রেগুলার চার্জ (৳৭০ / ৳১৩০)
+                      </button>
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 tabular-nums">
                     <div>
                       <label className="block font-semibold text-slate-700 mb-1">
@@ -3080,11 +3161,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </label>
                       <input
                         type="number"
+                        min={0}
                         value={settings.sylhetDeliveryBdt}
                         onChange={(e) =>
                           setSettings({
                             ...settings,
-                            sylhetDeliveryBdt: Number(e.target.value),
+                            sylhetDeliveryBdt: Math.max(0, Number(e.target.value)),
                           })
                         }
                         className="w-full px-3 py-2 border border-slate-300 rounded-lg"
@@ -3096,11 +3178,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </label>
                       <input
                         type="number"
+                        min={0}
                         value={settings.outsideSylhetDeliveryBdt}
                         onChange={(e) =>
                           setSettings({
                             ...settings,
-                            outsideSylhetDeliveryBdt: Number(e.target.value),
+                            outsideSylhetDeliveryBdt: Math.max(0, Number(e.target.value)),
                           })
                         }
                         className="w-full px-3 py-2 border border-slate-300 rounded-lg"
@@ -3112,11 +3195,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </label>
                       <input
                         type="number"
+                        min={0}
                         value={settings.freeDeliveryThresholdBdt}
                         onChange={(e) =>
                           setSettings({
                             ...settings,
-                            freeDeliveryThresholdBdt: Number(e.target.value),
+                            freeDeliveryThresholdBdt: Math.max(0, Number(e.target.value)),
                           })
                         }
                         className="w-full px-3 py-2 border border-slate-300 rounded-lg"
@@ -4772,6 +4856,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     }
                   />
                   <span>🔥 Special Offer (বিশেষ অফার)</span>
+                </label>
+                <label className="flex items-center gap-1.5 cursor-pointer font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
+                  <input
+                    type="checkbox"
+                    checked={productForm.freeDelivery}
+                    onChange={(e) =>
+                      setProductForm({
+                        ...productForm,
+                        freeDelivery: e.target.checked,
+                      })
+                    }
+                  />
+                  <span>🚚 ফ্রি ডেলিভারি (এই পণ্যে ডেলিভারি চার্জ সম্পূর্ণ ফ্রি)</span>
                 </label>
               </div>
 

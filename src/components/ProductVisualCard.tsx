@@ -46,6 +46,7 @@ interface ProductCardProps {
   onSelect: (product: Product, preselectedVariant?: ProductVariant | null) => void;
   onQuickAdd: (product: Product, selectedVariant?: ProductVariant | null) => void;
   onSelectCategory?: (categoryId: number) => void;
+  storeFreeDelivery?: boolean;
 }
 
 export const ProductCard: React.FC<ProductCardProps> = ({
@@ -53,6 +54,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
   onSelect,
   onQuickAdd,
   onSelectCategory,
+  storeFreeDelivery = false,
 }) => {
   const { allMediaWithPrimary, offerMeta, imageCount, videoCount } =
     parseProductGalleryAndOffer(product);
@@ -144,6 +146,11 @@ export const ProductCard: React.FC<ProductCardProps> = ({
               </span>
             ) : (
               <>
+                {(offerMeta.freeDelivery || storeFreeDelivery) && (
+                  <span className="text-[11px] font-bold tracking-wide text-white bg-[#006A4E]/95 px-2 py-0.5 rounded shadow-2xs">
+                    🚚 ফ্রি ডেলিভারি
+                  </span>
+                )}
                 {product.isSpecialOffer && (
                   <span className="text-[11px] font-bold tracking-wide text-white bg-[#14213D]/95 px-2 py-0.5 rounded shadow-2xs">
                     {offerMeta.badgeText || 'বিশেষ অফার'}
