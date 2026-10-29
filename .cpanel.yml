@@ -1,9 +1,7 @@
 ---
 deployment:
   tasks:
-    - export DEPLOYPATH=$HOME/public_html/
-    - /bin/mkdir -p $DEPLOYPATH
-    - /bin/cp -Rf dist/* $DEPLOYPATH
-    - /bin/cp -f dist/.htaccess $DEPLOYPATH/.htaccess
-    - /bin/cp -f dist/api.php $DEPLOYPATH/api.php
-    - /bin/chmod 644 $DEPLOYPATH/.htaccess $DEPLOYPATH/api.php $DEPLOYPATH/index.html
+    - export DEPLOYPATH=/home/boichitr/public_html/
+    - /bin/cp -Rf cpanel_release/* $DEPLOYPATH
+    - /bin/cp -f cpanel_release/.htaccess $DEPLOYPATH
+    - /bin/cp -f cpanel_release/api.php $DEPLOYPATH

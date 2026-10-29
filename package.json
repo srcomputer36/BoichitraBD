@@ -6,9 +6,9 @@
   "scripts": {
     "dev": "tsx server.ts",
     "start": "node server.ts",
-    "build": "vite build",
+    "build": "vite build && rm -rf cpanel_release && mkdir -p cpanel_release && cp -Rf dist/* cpanel_release/ && cp -f public/.htaccess cpanel_release/.htaccess && cp -f public/api.php cpanel_release/api.php",
     "preview": "vite preview",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist cpanel_release",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
