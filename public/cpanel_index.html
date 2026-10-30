@@ -6,24 +6,59 @@
     <script>
       (function () {
         try {
+          var currentFetch = window.fetch ? window.fetch.bind(window) : undefined;
+          var desc =
+            Object.getOwnPropertyDescriptor(window, 'fetch') ||
+            Object.getOwnPropertyDescriptor(Window.prototype, 'fetch');
+          if (desc && desc.configurable !== false && (!desc.writable && !desc.set)) {
+            Object.defineProperty(window, 'fetch', {
+              configurable: true,
+              enumerable: true,
+              get: function () {
+                return currentFetch;
+              },
+              set: function (fn) {
+                if (typeof fn === 'function') {
+                  currentFetch = fn;
+                }
+              },
+            });
+          }
+        } catch (_e) {}
+
+        try {
           window.__BOICHITRA_STOREFRONT_PREFETCH__ = window
-            .fetch('/api/storefront')
+            .fetch('/api/storefront', { cache: 'no-store' })
             .then(function (r) {
               return r.ok ? r.json() : null;
             })
             .catch(function () {
               return null;
             });
-          if (!localStorage.getItem('boichitra_cpanel_fast_v9')) {
-            window.__BOICHITRA_BUNDLE_PREFETCH__ = window
-              .fetch('/api/compiled-bundle')
-              .then(function (r) {
-                return r.ok ? r.json() : null;
-              })
-              .catch(function () {
-                return null;
-              });
-          }
+
+          var localHash = '';
+          try {
+            var raw = localStorage.getItem('boichitra_cpanel_fast_v12');
+            if (raw) {
+              var parsed = JSON.parse(raw);
+              if (parsed && parsed.hash && parsed.compiled && parsed.compiled.app) {
+                localHash = parsed.hash;
+              }
+            }
+          } catch (_e) {}
+
+          window.__BOICHITRA_BUNDLE_PREFETCH__ = window
+            .fetch(
+              '/api/compiled-bundle' +
+                (localHash ? '?clientHash=' + encodeURIComponent(localHash) : ''),
+              { cache: 'no-store' }
+            )
+            .then(function (r) {
+              return r.ok ? r.json() : null;
+            })
+            .catch(function () {
+              return null;
+            });
         } catch (_e) {}
       })();
     </script>
@@ -53,6 +88,7 @@
       href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
+    <link rel="stylesheet" crossorigin href="/assets/index-COMDy1Lc.css" />
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <style>
       :root {
@@ -69,12 +105,12 @@
       .tabular-nums {
         font-variant-numeric: tabular-nums;
       }
-      @keyframes bbdPulse {
+      @keyframes bbdFastPulse {
         0%, 100% { opacity: 1; }
         50% { opacity: 0.45; }
       }
-      .bbd-skeleton {
-        animation: bbdPulse 1.2s ease-in-out infinite;
+      .bbd-fast-skel {
+        animation: bbdFastPulse 1.2s ease-in-out infinite;
       }
       @media print {
         .no-print {
@@ -114,24 +150,50 @@
         }
       }
     </script>
+    <!-- Meta Pixel Code -->
+    <script>
+    !function(f,b,e,v,n,t,s)
+    {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+    n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+    if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+    n.queue=[];t=b.createElement(e);t.async=!0;
+    t.src=v;s=b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t,s)}(window, document,'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+    fbq('init', '1490137849595940');
+    fbq('track', 'PageView');
+    </script>
+    <!-- End Meta Pixel Code -->
   </head>
   <body class="bg-[#F3F5F7] text-[#172126] antialiased selection:bg-[#286F65] selection:text-white">
+    <noscript><img height="1" width="1" style="display:none"
+    src="https://www.facebook.com/tr?id=1490137849595940&ev=PageView&noscript=1"
+    /></noscript>
     <div id="root">
-      <!-- Instant First-Paint Shell (0ms render before JS hydration) -->
-      <header style="background:#ffffff;border-bottom:1px solid #e2e8f0;position:sticky;top:0;z-index:30;">
-        <div style="max-width:1360px;margin:0 auto;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;">
-          <div style="font-size:20px;font-weight:700;color:#14213D;">Boichitra BD — বৈচিত্র্য</div>
-          <div style="padding:8px 16px;background:#14213D;color:#ffffff;border-radius:8px;font-size:13px;font-weight:600;">শপিং ব্যাগ</div>
+      <div style="background:#14213D;color:#fff;padding:8px 16px;text-align:center;font-size:12px;font-weight:600;">
+        🚚 সিলেট থেকে সারাদেশে দ্রুত ক্যাশ অন ডেলিভারি · পণ্য হাতে পেয়ে মূল্য পরিশোধের সুবিধা
+      </div>
+      <header style="background:#fff;border-bottom:1px solid #E2E8F0;padding:14px 20px;">
+        <div style="max-width:1280px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <div style="width:38px;height:38px;border-radius:10px;background:#14213D;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:18px;">ব</div>
+            <div>
+              <div style="font-weight:700;font-size:18px;color:#14213D;line-height:1.1;">বৈচিত্র্য — Boichitra BD</div>
+              <div style="font-size:11px;color:#52636D;">Fashion, Gadget &amp; Everything</div>
+            </div>
+          </div>
+          <div style="font-size:12px;font-weight:600;color:#286F65;background:#EBF5F3;padding:6px 14px;border-radius:8px;">
+            স্টোর প্রস্তুত হচ্ছে...
+          </div>
         </div>
       </header>
-      <main style="max-width:1360px;margin:24px auto;padding:0 20px;">
-        <div class="bbd-skeleton" style="height:260px;border-radius:16px;background:#14213D;margin-bottom:28px;display:flex;align-items:center;justify-content:center;color:#ffffff;font-size:18px;font-weight:600;">
-          বৈচিত্র্য স্টোর লোড হচ্ছে...
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px;">
-          <div class="bbd-skeleton" style="height:340px;border-radius:14px;background:#ffffff;border:1px solid #e2e8f0;"></div>
-          <div class="bbd-skeleton" style="height:340px;border-radius:14px;background:#ffffff;border:1px solid #e2e8f0;"></div>
-          <div class="bbd-skeleton" style="height:340px;border-radius:14px;background:#ffffff;border:1px solid #e2e8f0;"></div>
+      <main style="max-width:1280px;margin:24px auto;padding:0 16px;">
+        <div class="bbd-fast-skel" style="height:220px;border-radius:18px;background:linear-gradient(135deg,#14213D 0%,#286F65 100%);margin-bottom:24px;"></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:18px;">
+          <div class="bbd-fast-skel" style="height:330px;border-radius:14px;background:#fff;border:1px solid #E2E8F0;"></div>
+          <div class="bbd-fast-skel" style="height:330px;border-radius:14px;background:#fff;border:1px solid #E2E8F0;"></div>
+          <div class="bbd-fast-skel" style="height:330px;border-radius:14px;background:#fff;border:1px solid #E2E8F0;"></div>
+          <div class="bbd-fast-skel" style="height:330px;border-radius:14px;background:#fff;border:1px solid #E2E8F0;"></div>
         </div>
       </main>
     </div>
@@ -139,7 +201,7 @@
       import React from 'react';
       import { createRoot } from 'react-dom/client';
 
-      const CACHE_KEY = 'boichitra_cpanel_fast_v9';
+      const CACHE_KEY = 'boichitra_cpanel_fast_v12';
 
       function makeBlobUrl(jsCode) {
         return URL.createObjectURL(new Blob([jsCode], { type: 'text/javascript' }));
@@ -174,32 +236,56 @@
 
       async function bootBoichitra() {
         let compiled = null;
+        let activeHash = 'v12_' + Date.now();
+        let localRecord = null;
 
-        // 1. Check fast localStorage cache first (0ms)
         try {
-          const cached = localStorage.getItem(CACHE_KEY);
-          if (cached) {
-            compiled = JSON.parse(cached);
+          const raw = localStorage.getItem(CACHE_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && parsed.compiled && parsed.compiled.app) {
+              localRecord = parsed;
+            }
           }
         } catch (_e) {}
 
-        // 2. Check server-side pre-compiled bundle cache (/api/compiled-bundle) — avoids loading 2.8MB Babel!
-        if (!compiled) {
-          try {
-            const prefetched = window.__BOICHITRA_BUNDLE_PREFETCH__
-              ? await window.__BOICHITRA_BUNDLE_PREFETCH__
-              : await fetch('/api/compiled-bundle').then((r) => (r.ok ? r.json() : null));
-            window.__BOICHITRA_BUNDLE_PREFETCH__ = null;
-            if (prefetched && prefetched.cached && prefetched.compiled && prefetched.compiled.app) {
-              compiled = prefetched.compiled;
-              try {
-                localStorage.setItem(CACHE_KEY, JSON.stringify(compiled));
-              } catch (_e) {}
-            }
-          } catch (_e) {}
+        // Verify server bundle hash so any cPanel deploy immediately invalidates old localStorage
+        try {
+          const serverBundle = window.__BOICHITRA_BUNDLE_PREFETCH__
+            ? await window.__BOICHITRA_BUNDLE_PREFETCH__
+            : await fetch('/api/compiled-bundle', { cache: 'no-store' }).then((r) =>
+                r.ok ? r.json() : null
+              );
+          window.__BOICHITRA_BUNDLE_PREFETCH__ = null;
+
+          if (serverBundle && serverBundle.hash) {
+            activeHash = serverBundle.hash;
+          }
+
+          if (serverBundle && serverBundle.upToDate && localRecord) {
+            compiled = localRecord.compiled;
+          } else if (
+            serverBundle &&
+            serverBundle.cached &&
+            serverBundle.compiled &&
+            serverBundle.compiled.app
+          ) {
+            compiled = serverBundle.compiled;
+            try {
+              localStorage.setItem(
+                CACHE_KEY,
+                JSON.stringify({ hash: activeHash, compiled })
+              );
+            } catch (_e) {}
+          }
+        } catch (_e) {
+          if (localRecord) {
+            compiled = localRecord.compiled;
+            activeHash = localRecord.hash || activeHash;
+          }
         }
 
-        // 3. Only if neither localStorage nor server has cached bundle yet, compile 4 storefront files & save to server
+        // If server does not yet have a cached bundle for this deploy hash, compile from /src/* and cache on server
         if (!compiled) {
           const files = [
             '/src/lib/bd-locations.ts',
@@ -210,7 +296,9 @@
           const [sources] = await Promise.all([
             Promise.all(
               files.map(async (url) => {
-                const res = await fetch(url + '?v=9');
+                const res = await fetch(url + '?v=' + encodeURIComponent(activeHash), {
+                  cache: 'no-store',
+                });
                 if (!res.ok) throw new Error('Failed to load ' + url);
                 return res.text();
               })
@@ -226,10 +314,12 @@
           };
 
           try {
-            localStorage.setItem(CACHE_KEY, JSON.stringify(compiled));
+            localStorage.setItem(
+              CACHE_KEY,
+              JSON.stringify({ hash: activeHash, compiled })
+            );
           } catch (_e) {}
 
-          // Save compiled bundle on server so all future visitors skip Babel completely!
           fetch('/api/compiled-bundle', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -251,14 +341,48 @@
           })
         );
 
-        // Lazy on-demand loader for AdminPanel.tsx (only downloaded & compiled when visiting /admin)
         window.__BOICHITRA_LOAD_ADMIN__ = async () => {
           if (window.__BOICHITRA_ADMIN_MOD__) return window.__BOICHITRA_ADMIN_MOD__;
-          const [adminSrc] = await Promise.all([
-            fetch('/src/components/AdminPanel.tsx?v=9').then((r) => r.text()),
-            loadBabelOnce(),
-          ]);
-          const adminJs = compileTsx(adminSrc, 'AdminPanel.tsx');
+          const adminLocalKey = 'boichitra_cpanel_admin_' + activeHash;
+          let adminJs = null;
+
+          try {
+            adminJs = localStorage.getItem(adminLocalKey);
+          } catch (_e) {}
+
+          if (!adminJs) {
+            try {
+              const srvAdmin = await fetch(
+                '/api/compiled-bundle?admin=1&v=' + encodeURIComponent(activeHash),
+                { cache: 'no-store' }
+              ).then((r) => (r.ok ? r.json() : null));
+              if (srvAdmin && srvAdmin.cached && srvAdmin.adminJs) {
+                adminJs = srvAdmin.adminJs;
+                try {
+                  localStorage.setItem(adminLocalKey, adminJs);
+                } catch (_e) {}
+              }
+            } catch (_e) {}
+          }
+
+          if (!adminJs) {
+            const [adminSrc] = await Promise.all([
+              fetch('/src/components/AdminPanel.tsx?v=' + encodeURIComponent(activeHash), {
+                cache: 'no-store',
+              }).then((r) => r.text()),
+              loadBabelOnce(),
+            ]);
+            adminJs = compileTsx(adminSrc, 'AdminPanel.tsx');
+            try {
+              localStorage.setItem(adminLocalKey, adminJs);
+            } catch (_e) {}
+            fetch('/api/compiled-bundle', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ adminJs }),
+            }).catch(() => {});
+          }
+
           const adminBlobUrl = makeBlobUrl(
             replaceImports(adminJs, {
               '../types.ts': typesUrl,

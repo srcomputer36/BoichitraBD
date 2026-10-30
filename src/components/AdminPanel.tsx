@@ -3445,6 +3445,37 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         }
                         className="w-full px-3 py-2 border border-slate-300 rounded-lg"
                       />
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleQuickFreeDeliveryMode(
+                              0,
+                              0,
+                              'সকল অর্ডারে সম্পূর্ণ ফ্রি ডেলিভারি (৳০)'
+                            )
+                          }
+                          className="px-2.5 py-1.5 rounded-lg bg-[#286F65] hover:bg-[#14213D] text-white font-bold text-[11px] transition cursor-pointer"
+                        >
+                          ✓ সব পণ্যে ফ্রি ডেলিভারি চালু করুন
+                        </button>
+                        {(settings.sylhetDeliveryBdt === 0 ||
+                          settings.outsideSylhetDeliveryBdt === 0) && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleQuickFreeDeliveryMode(
+                                70,
+                                130,
+                                'রেগুলার ডেলিভারি চার্জ (ঢাকা ৳৭০ / বাইরে ৳১৩০)'
+                              )
+                            }
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-200 hover:bg-slate-300 text-slate-800 font-semibold text-[11px] transition cursor-pointer"
+                          >
+                            ফ্রি ডেলিভারি বন্ধ করুন
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -3923,10 +3954,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       পদ্ধতি A: cPanel &ldquo;Git™ Version Control&rdquo; (সবচেয়ে সহজ)
                     </div>
                     <ol className="text-slate-700 space-y-1.5 list-decimal list-inside">
-                      <li>প্রথমে প্রজেক্টটি আপনার <strong>GitHub Repository</strong>-তে এক্সপোর্ট বা পুশ করুন। (এতে বিল্ট-ইন <code className="font-mono bg-white px-1 rounded border">dist/</code> ফোল্ডার ও <code className="font-mono bg-white px-1 rounded border">.cpanel.yml</code> প্রস্তুত আছে)।</li>
-                      <li>আপনার ProCloudify cPanel-এ লগইন করে <strong>Files / Tools</strong> সেকশন থেকে <strong>Git™ Version Control</strong>-এ যান এবং <strong>Create</strong> বাটনে ক্লিক করুন।</li>
-                      <li><strong>Clone URL</strong> বক্সে আপনার GitHub রিপোজিটরির লিংক দিন এবং নিচে <strong>Create</strong> চাপুন।</li>
-                      <li>তৈরি হওয়ার পর <strong>Manage</strong> &rarr; <strong>Pull or Deploy</strong> ট্যাবে গিয়ে <strong>Deploy HEAD Commit</strong> বাটনে ক্লিক করলেই <code className="font-mono bg-white px-1 rounded border">.cpanel.yml</code> স্বয়ংক্রিয়ভাবে সব ফাইল <code className="font-mono font-bold text-[#286F65]">public_html</code>-এ কপি করে সাইট লাইভ করে দেবে!</li>
+                      <li>প্রথমে AI Studio-এর উপরের ডান কোণায় থাকা <strong>GitHub আইকনে ক্লিক করে</strong> সর্বশেষ কোড আপনার <strong>GitHub Repository</strong>-তে এক্সপোর্ট বা পুশ করুন।</li>
+                      <li>আপনার ProCloudify cPanel-এ লগইন করে <strong>Git™ Version Control</strong> &rarr; <strong>Manage</strong> &rarr; <strong>Pull or Deploy</strong> ট্যাবে যান।</li>
+                      <li>প্রথমে <strong>Update from Remote</strong> বাটনে ক্লিক করুন (যাতে GitHub থেকে নতুন আপডেট cPanel-এ আসে)।</li>
+                      <li>এরপর <strong>Deploy HEAD Commit</strong> বাটনে ক্লিক করলেই <code className="font-mono bg-white px-1 rounded border">.cpanel.yml</code> স্বয়ংক্রিয়ভাবে সব ফাইল <code className="font-mono font-bold text-[#286F65]">public_html</code>-এ কপি করে নতুন ভার্সন সাথে সাথে লাইভ করে দেবে!</li>
                     </ol>
                   </div>
 

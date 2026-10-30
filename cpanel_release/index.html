@@ -26,26 +26,33 @@
           }
         } catch (_e) {}
 
-        window.addEventListener(
-          'error',
-          function (event) {
-            var filename = (event && event.filename) || '';
-            var message = (event && event.message) || '';
-            if (
-              filename.indexOf('chrome-extension://') === 0 ||
-              filename.indexOf('moz-extension://') === 0 ||
-              message.indexOf('Cannot set property fetch') !== -1
-            ) {
-              event.stopImmediatePropagation();
-              event.preventDefault();
-            }
-          },
-          true
-        );
-
         try {
           window.__BOICHITRA_STOREFRONT_PREFETCH__ = window
-            .fetch('/api/storefront')
+            .fetch('/api/storefront', { cache: 'no-store' })
+            .then(function (r) {
+              return r.ok ? r.json() : null;
+            })
+            .catch(function () {
+              return null;
+            });
+
+          var localHash = '';
+          try {
+            var raw = localStorage.getItem('boichitra_cpanel_fast_v12');
+            if (raw) {
+              var parsed = JSON.parse(raw);
+              if (parsed && parsed.hash && parsed.compiled && parsed.compiled.app) {
+                localHash = parsed.hash;
+              }
+            }
+          } catch (_e) {}
+
+          window.__BOICHITRA_BUNDLE_PREFETCH__ = window
+            .fetch(
+              '/api/compiled-bundle' +
+                (localHash ? '?clientHash=' + encodeURIComponent(localHash) : ''),
+              { cache: 'no-store' }
+            )
             .then(function (r) {
               return r.ok ? r.json() : null;
             })
@@ -73,15 +80,59 @@
       name="twitter:description"
       content="বৈচিত্র্য মানে সবকিছু এক জায়গায়! শীতের হুডি থেকে গরমের স্মার্ট গ্যাজেট, ট্রেন্ডি সব প্রোডাক্ট পাবে সিলেট থেকে সারাদেশে।"
     />
+    <link rel="preconnect" href="https://esm.sh" crossorigin />
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
-      media="print"
-      onload="this.media='all'"
     />
-    <style>@keyframes bbdFastPulse{0%,to{opacity:1}50%{opacity:.45}}.bbd-fast-skel{animation:1.2s ease-in-out infinite bbdFastPulse}</style>
+    <link rel="stylesheet" crossorigin href="/assets/index-COMDy1Lc.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <style>
+      :root {
+        --font-sans: 'Plus Jakarta Sans', 'Hind Siliguri', -apple-system, BlinkMacSystemFont, sans-serif;
+        --font-mono: 'JetBrains Mono', monospace;
+      }
+      body {
+        font-family: var(--font-sans);
+        background-color: #F3F5F7;
+        color: #172126;
+        overflow-x: hidden;
+        margin: 0;
+      }
+      .tabular-nums {
+        font-variant-numeric: tabular-nums;
+      }
+      @keyframes bbdFastPulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.45; }
+      }
+      .bbd-fast-skel {
+        animation: bbdFastPulse 1.2s ease-in-out infinite;
+      }
+      @media print {
+        .no-print {
+          display: none !important;
+        }
+        body {
+          background: #ffffff !important;
+        }
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "react": "https://esm.sh/react@19.0.1",
+          "react/jsx-runtime": "https://esm.sh/react@19.0.1/jsx-runtime",
+          "react-dom": "https://esm.sh/react-dom@19.0.1",
+          "react-dom/client": "https://esm.sh/react-dom@19.0.1/client",
+          "lucide-react": "https://esm.sh/lucide-react@0.546.0?external=react",
+          "xlsx": "https://esm.sh/xlsx@0.18.5"
+        }
+      }
+    </script>
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
@@ -99,12 +150,25 @@
         }
       }
     </script>
-    <script type="module" crossorigin src="/assets/index-vWubrNzf.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/rolldown-runtime-WkwZ5CU-.js">
-    <link rel="modulepreload" crossorigin href="/assets/vendor-CTym4sTV.js">
-    <link rel="stylesheet" crossorigin href="/assets/index-COMDy1Lc.css">
+    <!-- Meta Pixel Code -->
+    <script>
+    !function(f,b,e,v,n,t,s)
+    {if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+    n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+    if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+    n.queue=[];t=b.createElement(e);t.async=!0;
+    t.src=v;s=b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t,s)}(window, document,'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+    fbq('init', '1490137849595940');
+    fbq('track', 'PageView');
+    </script>
+    <!-- End Meta Pixel Code -->
   </head>
-  <body class="bg-[#F3F5F7] text-[#172126] antialiased selection:bg-[#286F65] selection:text-white" style="margin:0;background:#F3F5F7;color:#172126;font-family:system-ui,-apple-system,sans-serif;">
+  <body class="bg-[#F3F5F7] text-[#172126] antialiased selection:bg-[#286F65] selection:text-white">
+    <noscript><img height="1" width="1" style="display:none"
+    src="https://www.facebook.com/tr?id=1490137849595940&ev=PageView&noscript=1"
+    /></noscript>
     <div id="root">
       <div style="background:#14213D;color:#fff;padding:8px 16px;text-align:center;font-size:12px;font-weight:600;">
         🚚 সিলেট থেকে সারাদেশে দ্রুত ক্যাশ অন ডেলিভারি · পণ্য হাতে পেয়ে মূল্য পরিশোধের সুবিধা
@@ -133,5 +197,242 @@
         </div>
       </main>
     </div>
+    <script type="module">
+      import React from 'react';
+      import { createRoot } from 'react-dom/client';
+
+      const CACHE_KEY = 'boichitra_cpanel_fast_v12';
+
+      function makeBlobUrl(jsCode) {
+        return URL.createObjectURL(new Blob([jsCode], { type: 'text/javascript' }));
+      }
+
+      function loadBabelOnce() {
+        if (window.Babel) return Promise.resolve(window.Babel);
+        return new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = 'https://cdn.jsdelivr.net/npm/@babel/standalone@7.26.9/babel.min.js';
+          s.onload = () => resolve(window.Babel);
+          s.onerror = reject;
+          document.head.appendChild(s);
+        });
+      }
+
+      function compileTsx(source, filename) {
+        return window.Babel.transform(source, {
+          presets: ['react', 'typescript'],
+          filename,
+        }).code;
+      }
+
+      const replaceImports = (code, map) => {
+        let out = code;
+        for (const [target, blobUrl] of Object.entries(map)) {
+          out = out.split("'" + target + "'").join("'" + blobUrl + "'");
+          out = out.split('"' + target + '"').join('"' + blobUrl + '"');
+        }
+        return out;
+      };
+
+      async function bootBoichitra() {
+        let compiled = null;
+        let activeHash = 'v12_' + Date.now();
+        let localRecord = null;
+
+        try {
+          const raw = localStorage.getItem(CACHE_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && parsed.compiled && parsed.compiled.app) {
+              localRecord = parsed;
+            }
+          }
+        } catch (_e) {}
+
+        // Verify server bundle hash so any cPanel deploy immediately invalidates old localStorage
+        try {
+          const serverBundle = window.__BOICHITRA_BUNDLE_PREFETCH__
+            ? await window.__BOICHITRA_BUNDLE_PREFETCH__
+            : await fetch('/api/compiled-bundle', { cache: 'no-store' }).then((r) =>
+                r.ok ? r.json() : null
+              );
+          window.__BOICHITRA_BUNDLE_PREFETCH__ = null;
+
+          if (serverBundle && serverBundle.hash) {
+            activeHash = serverBundle.hash;
+          }
+
+          if (serverBundle && serverBundle.upToDate && localRecord) {
+            compiled = localRecord.compiled;
+          } else if (
+            serverBundle &&
+            serverBundle.cached &&
+            serverBundle.compiled &&
+            serverBundle.compiled.app
+          ) {
+            compiled = serverBundle.compiled;
+            try {
+              localStorage.setItem(
+                CACHE_KEY,
+                JSON.stringify({ hash: activeHash, compiled })
+              );
+            } catch (_e) {}
+          }
+        } catch (_e) {
+          if (localRecord) {
+            compiled = localRecord.compiled;
+            activeHash = localRecord.hash || activeHash;
+          }
+        }
+
+        // If server does not yet have a cached bundle for this deploy hash, compile from /src/* and cache on server
+        if (!compiled) {
+          const files = [
+            '/src/lib/bd-locations.ts',
+            '/src/lib/visuals.ts',
+            '/src/components/ProductVisualCard.tsx',
+            '/src/App.tsx',
+          ];
+          const [sources] = await Promise.all([
+            Promise.all(
+              files.map(async (url) => {
+                const res = await fetch(url + '?v=' + encodeURIComponent(activeHash), {
+                  cache: 'no-store',
+                });
+                if (!res.ok) throw new Error('Failed to load ' + url);
+                return res.text();
+              })
+            ),
+            loadBabelOnce(),
+          ]);
+
+          compiled = {
+            bdLocations: compileTsx(sources[0], 'bd-locations.ts'),
+            visuals: compileTsx(sources[1], 'visuals.ts') + '\nexport const ParsedMediaItem = {};',
+            productCard: compileTsx(sources[2], 'ProductVisualCard.tsx'),
+            app: compileTsx(sources[3], 'App.tsx'),
+          };
+
+          try {
+            localStorage.setItem(
+              CACHE_KEY,
+              JSON.stringify({ hash: activeHash, compiled })
+            );
+          } catch (_e) {}
+
+          fetch('/api/compiled-bundle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ compiled }),
+          }).catch(() => {});
+        }
+
+        const typesUrl = makeBlobUrl(
+          'export const CartItem = {}; export const Category = {}; export const Coupon = {}; export const Product = {}; export const ProductVariant = {}; export const StoreSettings = {}; export const AuditLogRecord = {}; export const CustomerRecord = {}; export const OrderRecord = {};'
+        );
+        const bdLocationsUrl = makeBlobUrl(compiled.bdLocations);
+        const visualsUrl = makeBlobUrl(compiled.visuals);
+
+        const productCardUrl = makeBlobUrl(
+          replaceImports(compiled.productCard, {
+            '../types.ts': typesUrl,
+            '../lib/bd-locations.ts': bdLocationsUrl,
+            '../lib/visuals.ts': visualsUrl,
+          })
+        );
+
+        window.__BOICHITRA_LOAD_ADMIN__ = async () => {
+          if (window.__BOICHITRA_ADMIN_MOD__) return window.__BOICHITRA_ADMIN_MOD__;
+          const adminLocalKey = 'boichitra_cpanel_admin_' + activeHash;
+          let adminJs = null;
+
+          try {
+            adminJs = localStorage.getItem(adminLocalKey);
+          } catch (_e) {}
+
+          if (!adminJs) {
+            try {
+              const srvAdmin = await fetch(
+                '/api/compiled-bundle?admin=1&v=' + encodeURIComponent(activeHash),
+                { cache: 'no-store' }
+              ).then((r) => (r.ok ? r.json() : null));
+              if (srvAdmin && srvAdmin.cached && srvAdmin.adminJs) {
+                adminJs = srvAdmin.adminJs;
+                try {
+                  localStorage.setItem(adminLocalKey, adminJs);
+                } catch (_e) {}
+              }
+            } catch (_e) {}
+          }
+
+          if (!adminJs) {
+            const [adminSrc] = await Promise.all([
+              fetch('/src/components/AdminPanel.tsx?v=' + encodeURIComponent(activeHash), {
+                cache: 'no-store',
+              }).then((r) => r.text()),
+              loadBabelOnce(),
+            ]);
+            adminJs = compileTsx(adminSrc, 'AdminPanel.tsx');
+            try {
+              localStorage.setItem(adminLocalKey, adminJs);
+            } catch (_e) {}
+            fetch('/api/compiled-bundle', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ adminJs }),
+            }).catch(() => {});
+          }
+
+          const adminBlobUrl = makeBlobUrl(
+            replaceImports(adminJs, {
+              '../types.ts': typesUrl,
+              '../lib/bd-locations.ts': bdLocationsUrl,
+              '../lib/visuals.ts': visualsUrl,
+              './ProductVisualCard.tsx': productCardUrl,
+            })
+          );
+          window.__BOICHITRA_ADMIN_MOD__ = await import(adminBlobUrl);
+          return window.__BOICHITRA_ADMIN_MOD__;
+        };
+
+        const lazyAdminProxyUrl = makeBlobUrl(`
+          import React, { useEffect, useState } from 'react';
+          export function AdminPanel(props) {
+            const [Comp, setComp] = useState(null);
+            useEffect(() => {
+              window.__BOICHITRA_LOAD_ADMIN__().then((m) => setComp(() => m.AdminPanel));
+            }, []);
+            if (!Comp) {
+              return React.createElement(
+                'div',
+                { className: 'min-h-screen flex items-center justify-center bg-[#F3F5F7] text-[#14213D] font-semibold text-sm' },
+                'অ্যাডমিন প্যানেল প্রস্তুত হচ্ছে...'
+              );
+            }
+            return React.createElement(Comp, props);
+          }
+        `);
+
+        const appUrl = makeBlobUrl(
+          replaceImports(compiled.app, {
+            './types.ts': typesUrl,
+            './lib/bd-locations.ts': bdLocationsUrl,
+            './lib/visuals.ts': visualsUrl,
+            './components/ProductVisualCard.tsx': productCardUrl,
+            './components/AdminPanel.tsx': lazyAdminProxyUrl,
+          })
+        );
+
+        const AppModule = await import(appUrl);
+        createRoot(document.getElementById('root')).render(
+          React.createElement(AppModule.default)
+        );
+      }
+
+      bootBoichitra().catch((err) => {
+        console.error('Boichitra boot error:', err);
+        localStorage.removeItem(CACHE_KEY);
+      });
+    </script>
   </body>
 </html>

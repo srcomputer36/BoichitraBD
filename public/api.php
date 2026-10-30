@@ -863,26 +863,44 @@ if ($method !== 'GET' && $requestUri !== '/api/compiled-bundle') {
   @unlink($storefrontCacheFile);
 }
 
-// Server-side pre-compiled storefront JS bundle cache (avoids 2.8MB Babel download for visitors)
+// Server-side pre-compiled storefront & admin JS bundle cache (auto-invalidates on any /src/* change)
 if ($requestUri === '/api/compiled-bundle') {
   $srcFiles = [
     __DIR__ . '/src/lib/bd-locations.ts',
     __DIR__ . '/src/lib/visuals.ts',
     __DIR__ . '/src/components/ProductVisualCard.tsx',
     __DIR__ . '/src/App.tsx',
+    __DIR__ . '/src/components/AdminPanel.tsx',
   ];
-  $sigParts = ['v9'];
+  $sigParts = ['v12'];
   foreach ($srcFiles as $sf) {
     $sigParts[] = @filemtime($sf) . ':' . @filesize($sf);
   }
   $bundleHash = substr(md5(implode('|', $sigParts)), 0, 16);
   $bundleCachePath = $storageDir . '/compiled_storefront_' . $bundleHash . '.json';
+  $adminCachePath = $storageDir . '/compiled_admin_' . $bundleHash . '.json';
 
   if ($method === 'GET') {
+    $wantAdmin = !empty($_GET['admin']);
+    if ($wantAdmin) {
+      if (file_exists($adminCachePath)) {
+        http_response_code(200);
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store, no-cache, must-revalidate');
+        readfile($adminCachePath);
+        exit;
+      }
+      sendJson(['cached' => false, 'hash' => $bundleHash]);
+    }
+
+    $clientHash = $_GET['clientHash'] ?? '';
+    if ($clientHash !== '' && $clientHash === $bundleHash) {
+      sendJson(['upToDate' => true, 'hash' => $bundleHash]);
+    }
     if (file_exists($bundleCachePath)) {
       http_response_code(200);
       header('Content-Type: application/json; charset=utf-8');
-      header('Cache-Control: public, max-age=3600');
+      header('Cache-Control: no-store, no-cache, must-revalidate');
       readfile($bundleCachePath);
       exit;
     }
@@ -890,6 +908,16 @@ if ($requestUri === '/api/compiled-bundle') {
   }
 
   if ($method === 'POST') {
+    if (!empty($body['adminJs']) && is_string($body['adminJs'])) {
+      $adminPayload = json_encode([
+        'cached' => true,
+        'hash' => $bundleHash,
+        'adminJs' => $body['adminJs'],
+      ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+      @file_put_contents($adminCachePath, $adminPayload);
+      sendJson(['saved' => true, 'hash' => $bundleHash]);
+    }
+
     if (
       !empty($body['compiled']) &&
       is_array($body['compiled']) &&

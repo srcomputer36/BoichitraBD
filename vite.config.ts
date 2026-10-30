@@ -1,56 +1,14 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
-import fs from 'fs';
 import path from 'path';
 import {defineConfig} from 'vite';
 
-function syncCpanelReleasePlugin() {
-  return {
-    name: 'sync-cpanel-release',
-    closeBundle() {
-      try {
-        const distDir = path.resolve(__dirname, 'dist');
-        const releaseDir = path.resolve(__dirname, 'cpanel_release');
-        if (!fs.existsSync(distDir)) return;
-
-        fs.mkdirSync(releaseDir, {recursive: true});
-
-        // Copy dist/index.html -> cpanel_release/index.html
-        const distIndex = path.join(distDir, 'index.html');
-        if (fs.existsSync(distIndex)) {
-          fs.copyFileSync(distIndex, path.join(releaseDir, 'index.html'));
-        }
-
-        // Clean and copy dist/assets -> cpanel_release/assets (excluding aistudio runtime script)
-        const distAssets = path.join(distDir, 'assets');
-        const releaseAssets = path.join(releaseDir, 'assets');
-        if (fs.existsSync(releaseAssets)) {
-          fs.rmSync(releaseAssets, {recursive: true, force: true});
-        }
-        if (fs.existsSync(distAssets)) {
-          fs.mkdirSync(releaseAssets, {recursive: true});
-          for (const entry of fs.readdirSync(distAssets, {withFileTypes: true})) {
-            if (entry.name === 'aistudio') continue;
-            const srcPath = path.join(distAssets, entry.name);
-            const destPath = path.join(releaseAssets, entry.name);
-            if (entry.isFile()) {
-              fs.copyFileSync(srcPath, destPath);
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('sync-cpanel-release warning:', err);
-      }
-    },
-  };
-}
-
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss(), syncCpanelReleasePlugin()],
+    plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(process.cwd(), '.'),
       },
     },
     server: {
@@ -76,4 +34,3 @@ export default defineConfig(() => {
     },
   };
 });
-

@@ -2,12 +2,9 @@
 deployment:
   tasks:
     - export DEPLOYPATH=/home/boichitr/public_html/
-    - /bin/rm -rf $DEPLOYPATH/assets
     - /bin/cp -Rf src $DEPLOYPATH
     - /bin/cp -Rf cpanel_release/assets $DEPLOYPATH
     - /bin/cp -f cpanel_release/index.html $DEPLOYPATH/index.html
     - /bin/cp -f public/api.php $DEPLOYPATH
     - /bin/cp -f public/.htaccess $DEPLOYPATH
     - /bin/rm -f $DEPLOYPATH/boichitra_storage/storefront_fast_cache.json
-    - /bin/rm -f $DEPLOYPATH/boichitra_storage/compiled_bundle*.json
-
