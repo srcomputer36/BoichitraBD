@@ -28,6 +28,7 @@ import {
   getBusinessKoroSyncStatus,
   syncBusinessKoroProducts,
   invalidateStorefrontCache,
+  getRawBanglaQrImageUrl,
 } from './src/db/repository.ts';
 import {
   requireAdminAuth,
@@ -276,11 +277,41 @@ app.post('/api/admin/auth/change-password', requireAdminAuth, async (req: AuthRe
 // PUBLIC STOREFRONT & GUEST CHECKOUT ROUTES
 // ============================================================================
 
+app.get('/api/bangla-qr-image', async (_req, res) => {
+  try {
+    const rawUrl = await getRawBanglaQrImageUrl();
+    const match = rawUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+    if (match) {
+      const mimeType = match[1];
+      const buffer = Buffer.from(match[2], 'base64');
+      res.setHeader('Content-Type', mimeType);
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      return res.send(buffer);
+    }
+    if (
+      rawUrl.startsWith('http') ||
+      (rawUrl.startsWith('/') && rawUrl !== '/api/bangla-qr-image')
+    ) {
+      return res.redirect(302, rawUrl);
+    }
+    return res.status(404).end();
+  } catch {
+    return res.status(404).end();
+  }
+});
+
 app.get('/api/storefront', async (req, res) => {
   try {
     const data = await getStorefrontData();
     if (!cachedStorefrontJson) {
-      cachedStorefrontJson = JSON.stringify(data);
+      const slimSettings =
+        data.settings &&
+        typeof data.settings.banglaQrImageUrl === 'string' &&
+        data.settings.banglaQrImageUrl.length > 2000 &&
+        data.settings.banglaQrImageUrl.startsWith('data:image/')
+          ? { ...data.settings, banglaQrImageUrl: '/api/bangla-qr-image' }
+          : data.settings;
+      cachedStorefrontJson = JSON.stringify({ ...data, settings: slimSettings });
       cachedStorefrontGzip = zlib.gzipSync(Buffer.from(cachedStorefrontJson, 'utf-8'));
     }
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
@@ -375,8 +406,7 @@ app.post('/api/orders/track', async (req, res) => {
 app.get('/api/admin/overview', requireAdminAuth, async (req: AuthRequest, res) => {
   try {
     const overview = await getAdminOverviewData();
-    res.setHeader('Cache-Control', 'no-store, private');
-    res.json({
+    const payloadJson = JSON.stringify({
       ...overview,
       adminUser: {
         email: req.user?.email,
@@ -384,6 +414,15 @@ app.get('/api/admin/overview', requireAdminAuth, async (req: AuthRequest, res) =
         role: req.adminRecord?.role || 'admin',
       },
     });
+    res.setHeader('Cache-Control', 'no-store, private');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    const acceptEnc = String(req.headers['accept-encoding'] || '');
+    if (acceptEnc.includes('gzip')) {
+      res.setHeader('Content-Encoding', 'gzip');
+      res.setHeader('Vary', 'Accept-Encoding');
+      return res.end(zlib.gzipSync(Buffer.from(payloadJson, 'utf-8')));
+    }
+    return res.end(payloadJson);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'অ্যাডমিন ডেটা লোড করা যায়নি।' });
   }

@@ -52,6 +52,28 @@
             .catch(function () {
               return null;
             });
+
+          var isAdminPath =
+            window.location.pathname.indexOf('/admin') === 0 ||
+            window.location.hash === '#admin';
+          if (isAdminPath) {
+            var adminToken = '';
+            try {
+              adminToken = localStorage.getItem('bbd_admin_session_token_v1') || '';
+            } catch (_e) {}
+            window.__BOICHITRA_ADMIN_OVERVIEW_PREFETCH__ = window
+              .fetch('/api/admin/overview', {
+                cache: 'no-store',
+                credentials: 'include',
+                headers: adminToken ? { Authorization: 'Bearer ' + adminToken } : {},
+              })
+              .then(function (r) {
+                return r.ok ? r.json() : null;
+              })
+              .catch(function () {
+                return null;
+              });
+          }
         } catch (_e) {}
       })();
     </script>

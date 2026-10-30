@@ -59,6 +59,46 @@
             .catch(function () {
               return null;
             });
+
+          var isAdminPath =
+            window.location.pathname.indexOf('/admin') === 0 ||
+            window.location.hash === '#admin';
+          if (isAdminPath) {
+            var adminToken = '';
+            try {
+              adminToken = localStorage.getItem('bbd_admin_session_token_v1') || '';
+            } catch (_e) {}
+            window.__BOICHITRA_ADMIN_OVERVIEW_PREFETCH__ = window
+              .fetch('/api/admin/overview', {
+                cache: 'no-store',
+                credentials: 'include',
+                headers: adminToken ? { Authorization: 'Bearer ' + adminToken } : {},
+              })
+              .then(function (r) {
+                return r.ok ? r.json() : null;
+              })
+              .catch(function () {
+                return null;
+              });
+
+            var hasLocalAdmin = false;
+            try {
+              if (localHash && localStorage.getItem('boichitra_cpanel_admin_' + localHash)) {
+                hasLocalAdmin = true;
+              }
+            } catch (_e) {}
+
+            if (!hasLocalAdmin) {
+              window.__BOICHITRA_ADMIN_BUNDLE_PREFETCH__ = window
+                .fetch('/api/compiled-bundle?admin=1', { cache: 'no-store' })
+                .then(function (r) {
+                  return r.ok ? r.json() : null;
+                })
+                .catch(function () {
+                  return null;
+                });
+            }
+          }
         } catch (_e) {}
       })();
     </script>
@@ -87,9 +127,11 @@
     <link
       href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
     />
     <link rel="stylesheet" crossorigin href="/assets/index-COMDy1Lc.css" />
-    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4" defer></script>
     <style>
       :root {
         --font-sans: 'Plus Jakarta Sans', 'Hind Siliguri', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -352,10 +394,13 @@
 
           if (!adminJs) {
             try {
-              const srvAdmin = await fetch(
-                '/api/compiled-bundle?admin=1&v=' + encodeURIComponent(activeHash),
-                { cache: 'no-store' }
-              ).then((r) => (r.ok ? r.json() : null));
+              const srvAdmin = window.__BOICHITRA_ADMIN_BUNDLE_PREFETCH__
+                ? await window.__BOICHITRA_ADMIN_BUNDLE_PREFETCH__
+                : await fetch(
+                    '/api/compiled-bundle?admin=1&v=' + encodeURIComponent(activeHash),
+                    { cache: 'no-store' }
+                  ).then((r) => (r.ok ? r.json() : null));
+              window.__BOICHITRA_ADMIN_BUNDLE_PREFETCH__ = null;
               if (srvAdmin && srvAdmin.cached && srvAdmin.adminJs) {
                 adminJs = srvAdmin.adminJs;
                 try {
@@ -398,10 +443,14 @@
         const lazyAdminProxyUrl = makeBlobUrl(`
           import React, { useEffect, useState } from 'react';
           export function AdminPanel(props) {
-            const [Comp, setComp] = useState(null);
+            const [Comp, setComp] = useState(() =>
+              window.__BOICHITRA_ADMIN_MOD__ ? window.__BOICHITRA_ADMIN_MOD__.AdminPanel : null
+            );
             useEffect(() => {
-              window.__BOICHITRA_LOAD_ADMIN__().then((m) => setComp(() => m.AdminPanel));
-            }, []);
+              if (!Comp) {
+                window.__BOICHITRA_LOAD_ADMIN__().then((m) => setComp(() => m.AdminPanel));
+              }
+            }, [Comp]);
             if (!Comp) {
               return React.createElement(
                 'div',
@@ -423,7 +472,15 @@
           })
         );
 
-        const AppModule = await import(appUrl);
+        const isAdminRoute =
+          window.location.pathname.indexOf('/admin') === 0 ||
+          window.location.hash === '#admin';
+
+        const [AppModule] = await Promise.all([
+          import(appUrl),
+          isAdminRoute ? window.__BOICHITRA_LOAD_ADMIN__().catch(() => null) : Promise.resolve(null),
+        ]);
+
         createRoot(document.getElementById('root')).render(
           React.createElement(AppModule.default)
         );

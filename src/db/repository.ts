@@ -29,9 +29,11 @@ import { normalizeBdPhone, BANGLADESH_DISTRICTS } from '../lib/bd-locations.ts';
 
 let seedPromise: Promise<void> | null = null;
 let storefrontMemoryCache: { data: any; expiresAt: number } | null = null;
+let adminOverviewMemoryCache: { data: any; expiresAt: number } | null = null;
 
 export function invalidateStorefrontCache(): void {
   storefrontMemoryCache = null;
+  adminOverviewMemoryCache = null;
 }
 
 async function ensureDatabaseTablesCreated(): Promise<void> {
@@ -1396,6 +1398,10 @@ export async function trackOrderPublic(orderNumber: string, phone: string) {
 
 export async function getAdminOverviewData() {
   try {
+    if (adminOverviewMemoryCache && Date.now() < adminOverviewMemoryCache.expiresAt) {
+      return adminOverviewMemoryCache.data as never;
+    }
+
     await ensureStoreInitialized();
     const [
       allOrders,
@@ -1417,7 +1423,7 @@ export async function getAdminOverviewData() {
       db.select().from(productVariants),
       db.select().from(categories).orderBy(asc(categories.sortOrder)),
       db.select().from(storeSettings),
-      db.select().from(auditLogs).orderBy(desc(auditLogs.createdAt)),
+      db.select().from(auditLogs).orderBy(desc(auditLogs.createdAt)).limit(80),
       db.select().from(coupons),
     ]);
 
@@ -1506,7 +1512,22 @@ export async function getAdminOverviewData() {
         productCount: prodCountByCat.get(c.id) || 0,
       }));
 
-    return {
+    const parsedSettings = parseStoreSettingsWithBanglaQr(allSettings[0]);
+    const slimSettings =
+      parsedSettings &&
+      parsedSettings.banglaQrImageUrl &&
+      parsedSettings.banglaQrImageUrl.length > 2000 &&
+      parsedSettings.banglaQrImageUrl.startsWith('data:image/')
+        ? { ...parsedSettings, banglaQrImageUrl: '/api/bangla-qr-image' }
+        : parsedSettings;
+
+    const cfg = getBusinessKoroConfig();
+    const syncedProductsCount = visibleAdminProducts.filter((p) =>
+      p.sku.toUpperCase().startsWith('BBD-BK-')
+    ).length;
+    const lastSyncLog = allLogs.find((l) => l.action === 'BUSINESSKORO_SYNC');
+
+    const result = {
       stats,
       orders: allOrders.map((o) => {
         const parsedNote = parseOrderNoteWithManualPayment(o.orderNote);
@@ -1527,10 +1548,25 @@ export async function getAdminOverviewData() {
         variants: variantsByProduct.get(p.id) || [],
       })),
       categories: activeAdminCategories,
-      settings: parseStoreSettingsWithBanglaQr(allSettings[0]),
+      settings: slimSettings,
       coupons: allCoupons,
-      auditLogs: allLogs.slice(0, 100),
+      auditLogs: allLogs.slice(0, 80),
+      bkStatus: {
+        hasServerApiKey: Boolean(cfg.apiKey),
+        endpointUrl: cfg.productsUrl,
+        syncedProductsCount,
+        catalogFeedAvailableCount: Math.max(54, syncedProductsCount),
+        lastSyncAt: lastSyncLog?.createdAt || null,
+        lastSyncDetails: lastSyncLog?.details || null,
+      },
     };
+
+    adminOverviewMemoryCache = {
+      data: result,
+      expiresAt: Date.now() + 15_000,
+    };
+
+    return result;
   } catch (error) {
     console.error('Failed to fetch admin overview data:', error);
     throw new Error('অ্যাডমিন প্যানেলের ডেটা লোড করতে সমস্যা হয়েছে।', { cause: error });
@@ -2113,6 +2149,18 @@ export async function saveCategoryAdmin(
   }
 }
 
+export async function getRawBanglaQrImageUrl(): Promise<string> {
+  try {
+    await ensureStoreInitialized();
+    const rows = await db.select().from(storeSettings);
+    if (rows.length === 0) return '';
+    const parsed = parseStoreSettingsWithBanglaQr(rows[0]);
+    return parsed.banglaQrImageUrl || '';
+  } catch {
+    return '';
+  }
+}
+
 export async function updateStoreSettingsAdmin(
   adminEmail: string,
   adminUid: string,
@@ -2149,7 +2197,8 @@ export async function updateStoreSettingsAdmin(
       returnPolicyText: payload.returnPolicyText,
       banglaQrEnabled: payload.banglaQrEnabled ?? existingParsed.banglaQrEnabled,
       banglaQrImageUrl:
-        payload.banglaQrImageUrl !== undefined
+        payload.banglaQrImageUrl !== undefined &&
+        payload.banglaQrImageUrl !== '/api/bangla-qr-image'
           ? payload.banglaQrImageUrl
           : existingParsed.banglaQrImageUrl,
       banglaQrMerchantName:

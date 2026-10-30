@@ -548,10 +548,73 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
-  const specialOfferProducts = useMemo(
-    () => products.filter((p) => p.isSpecialOffer),
-    [products]
+  const specialOfferProducts = useMemo(() => {
+    const explicitOffers = products.filter((p) => Boolean(p.isSpecialOffer));
+    const discountedOnly = products.filter(
+      (p) =>
+        !p.isSpecialOffer &&
+        Boolean(
+          p.salePriceBdt &&
+            Number(p.salePriceBdt) > 0 &&
+            Number(p.salePriceBdt) < Number(p.priceBdt)
+        )
+    );
+    const combined = [...explicitOffers, ...discountedOnly];
+    if (combined.length > 0) {
+      return combined;
+    }
+    return products.slice(0, 6);
+  }, [products]);
+
+  const [offerSlideIndex, setOfferSlideIndex] = useState(0);
+  const [isOfferSliderPaused, setIsOfferSliderPaused] = useState(false);
+  const offerCarouselRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (offerSlideIndex >= specialOfferProducts.length && specialOfferProducts.length > 0) {
+      setOfferSlideIndex(0);
+    }
+  }, [specialOfferProducts.length, offerSlideIndex]);
+
+  const scrollOfferCarouselToIndex = useCallback((idx: number) => {
+    const container = offerCarouselRef.current;
+    if (!container) return;
+    const child = container.children[idx] as HTMLElement | undefined;
+    if (child) {
+      const targetLeft =
+        child.offsetLeft -
+        container.offsetLeft -
+        (container.clientWidth - child.clientWidth) / 2;
+      container.scrollTo({
+        left: Math.max(0, targetLeft),
+        behavior: 'smooth',
+      });
+    }
+  }, []);
+
+  const handleSelectOfferSlide = useCallback(
+    (nextIndex: number) => {
+      if (specialOfferProducts.length === 0) return;
+      const wrapped =
+        ((nextIndex % specialOfferProducts.length) + specialOfferProducts.length) %
+        specialOfferProducts.length;
+      setOfferSlideIndex(wrapped);
+      scrollOfferCarouselToIndex(wrapped);
+    },
+    [specialOfferProducts.length, scrollOfferCarouselToIndex]
   );
+
+  useEffect(() => {
+    if (specialOfferProducts.length <= 1 || isOfferSliderPaused) return;
+    const timer = setInterval(() => {
+      setOfferSlideIndex((prev) => {
+        const next = (prev + 1) % specialOfferProducts.length;
+        scrollOfferCarouselToIndex(next);
+        return next;
+      });
+    }, 4500);
+    return () => clearInterval(timer);
+  }, [specialOfferProducts.length, isOfferSliderPaused, scrollOfferCarouselToIndex]);
 
   const handleCopyCoupon = (code: string) => {
     setCouponInput(code);
@@ -857,13 +920,6 @@ export default function App() {
     );
   }
 
-  const heroVisual = createStudioProductSvg(
-    'hoodie',
-    '#14213D',
-    '#286F65',
-    'BOICHITRA BD · SYLHET TO NATIONWIDE'
-  );
-
   return (
     <div className="min-h-screen flex flex-col bg-[#F3F5F7] text-[#172126]">
       {/* 1. TOP BAR CONTRACT: Strictly 1 row, 3 zones separated by gap-8 (Brand wordmark | 5 concise nav links | 1 primary Cart CTA) */}
@@ -913,7 +969,7 @@ export default function App() {
               বেস্ট সেলার
             </a>
             <a
-              href="#catalog"
+              href="#special-offers"
               onClick={() => setCollectionTab('offer')}
               className="hover:text-[#14213D] hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0"
             >
@@ -1044,144 +1100,450 @@ export default function App() {
       </div>
 
       <main id="top" className="flex-1 max-w-[1360px] w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-12">
-        {/* 3. XSTORE-INSPIRED SPLIT HERO SHOWCASE */}
-        <section className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-          {/* Primary Hero Campaign Card (7 columns on desktop) */}
-          <div className="lg:col-span-7 bg-[#14213D] text-white rounded-2xl p-6 sm:p-10 flex flex-col justify-between relative overflow-hidden">
-            <div className="space-y-4 max-w-xl z-10">
-              <div className="text-xs font-semibold tracking-wider text-emerald-300">
-                Fashion, Gadget &amp; Everything · সিলেট থেকে সারাদেশে
-              </div>
-
-              <h1
-                className="font-bold tracking-tight leading-tight text-white"
-                style={{ fontSize: 'clamp(1.85rem, 3.2vw, 2.85rem)', textWrap: 'balance' }}
-              >
-                সবকিছু এক জায়গায়, আপনার পছন্দমতো!
-              </h1>
-
-              <p className="text-sm sm:text-base text-slate-200 leading-relaxed">
-                বৈচিত্র্য মানে সবকিছু এক জায়গায়! শীতের হুডি থেকে গরমের স্মার্ট গ্যাজেট, ট্রেন্ডি সব প্রোডাক্ট পাবে সিলেট থেকে সারাদেশে।
-              </p>
-
-              <div className="pt-2 flex flex-wrap items-center gap-3">
-                <a
-                  href="#catalog"
-                  className="px-5 py-3 bg-[#16A34A] hover:bg-[#286F65] text-white text-sm font-semibold rounded-xl transition-colors inline-flex items-center gap-2 whitespace-nowrap shrink-0"
-                >
-                  <span>এখনই শপিং করুন (Shop Now)</span>
-                  <ArrowRight className="w-4 h-4" />
-                </a>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCollectionTab('offer');
-                    document.getElementById('catalog')?.scrollIntoView({ behavior: 'smooth' });
-                  }}
-                  className="px-4 py-3 bg-white/10 hover:bg-white/20 text-white text-sm font-medium rounded-xl transition-colors whitespace-nowrap shrink-0"
-                >
-                  বিশেষ অফার দেখুন
-                </button>
-              </div>
-            </div>
-
-            <div className="mt-8 pt-5 border-t border-white/15 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-slate-300 z-10 tabular-nums">
-              <span>অ্যাকাউন্ট ছাড়াই সরাসরি অর্ডার (Guest Checkout)</span>
-              <span aria-hidden="true">·</span>
-              <span>ক্যাশ অন ডেলিভারি সুবিধা</span>
-              <span aria-hidden="true">·</span>
-              <span>
-                {formatBdt(settings?.freeDeliveryThresholdBdt ?? 3000)}+ অর্ডারে ফ্রি ডেলিভারি
-              </span>
-            </div>
-          </div>
-
-          {/* Secondary Promotional Split Column (5 columns on desktop) */}
-          <div className="lg:col-span-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 gap-6">
-            <div className="bg-white rounded-2xl border border-slate-200/90 p-6 flex items-center justify-between gap-4">
-              <div className="space-y-2">
-                <div className="text-xs font-medium text-[#286F65]">Discover Your Style</div>
-                <h2 className="text-lg font-bold text-[#14213D]">
-                  শীতের হুডি ও ফেস্টিভ পাঞ্জাবি কালেকশন
-                </h2>
-                <p className="text-xs text-slate-600">
-                  ৩৪০ জিএসএম হেভিওয়েট ফ্লিস হুডি ও প্রিমিয়াম সুতি পাঞ্জাবি।
-                </p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const fashionCat = categories.find(
-                      (c) =>
-                        c.slug.includes('fashion') ||
-                        c.name.toLowerCase().includes('fashion')
-                    );
-                    if (fashionCat) {
-                      handleSelectCategory(fashionCat.id, true);
-                    } else {
-                      setSelectedCategoryId('ALL');
-                      setCollectionTab('seasonal');
-                      document.getElementById('catalog')?.scrollIntoView({ behavior: 'smooth' });
-                    }
-                  }}
-                  className="text-xs font-semibold text-[#14213D] hover:text-[#286F65] inline-flex items-center gap-1 pt-1"
-                >
-                  <span>ফ্যাশন কালেকশন দেখুন</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              <div className="w-28 h-24 rounded-xl overflow-hidden bg-slate-100 shrink-0">
-                <img
-                  src={heroVisual}
-                  alt="Winter Hoodie Showcase"
-                  className="w-full h-full object-cover"
-                />
-              </div>
-            </div>
-
-            <div className="bg-white rounded-2xl border border-slate-200/90 p-6 flex items-center justify-between gap-4">
-              <div className="space-y-2">
-                <div className="text-xs font-medium text-[#286F65]">
-                  Smart Gadgets for Everyday Life
+        {/* 3. SPECIAL OFFERS & FLASH DEALS AUTO-SLIDER SHOWCASE */}
+        {specialOfferProducts.length > 0 && (
+          <section
+            id="special-offers"
+            aria-label="বিশেষ অফার ও ফ্ল্যাশ ডিল স্লাইডার"
+            onMouseEnter={() => setIsOfferSliderPaused(true)}
+            onMouseLeave={() => setIsOfferSliderPaused(false)}
+            onTouchStart={() => setIsOfferSliderPaused(true)}
+            onTouchEnd={() => setIsOfferSliderPaused(false)}
+            className="bg-white rounded-2xl border border-[#286F65]/35 p-4 sm:p-6 space-y-5 shadow-xs"
+          >
+            {/* Slider Header: Title, Live Countdown, Active Coupons & Slide Controls */}
+            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-4">
+              <div className="space-y-1">
+                <div className="inline-flex items-center gap-2 text-xs font-bold text-[#16A34A]">
+                  <Sparkles className="w-4 h-4" />
+                  <span>বিশেষ অফার ও ফ্ল্যাশ ডিল (Special Offers &amp; Flash Deals)</span>
+                  <span className="text-slate-400 font-normal">·</span>
+                  <span className="text-[#14213D] font-mono tabular-nums">
+                    স্লাইড {Math.min(offerSlideIndex + 1, specialOfferProducts.length)} /{' '}
+                    {specialOfferProducts.length}
+                  </span>
                 </div>
-                <h2 className="text-lg font-bold text-[#14213D]">
-                  এএনসি হেডফোন, স্মার্টওয়াচ ও পাওয়ার ব্যাংক
-                </h2>
-                <p className="text-xs text-slate-600 tabular-nums">
-                  কুপন কোড <strong className="font-mono text-[#14213D]">SYLHET100</strong> ব্যবহারে ৳১০০ ছাড়!
-                </p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const gadgetCat = categories.find(
-                      (c) =>
-                        c.slug === 'smart-gadgets' ||
-                        c.slug.includes('gadget') ||
-                        c.slug.includes('power') ||
-                        c.slug.includes('audio')
-                    );
-                    if (gadgetCat) {
-                      handleSelectCategory(gadgetCat.id, true);
-                    } else {
-                      handleSelectCategory('ALL', true);
-                    }
-                  }}
-                  className="text-xs font-semibold text-[#14213D] hover:text-[#286F65] inline-flex items-center gap-1 pt-1"
-                >
-                  <span>গ্যাজেট কালেকশন দেখুন</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
+                <h1 className="text-lg sm:text-2xl font-bold text-[#14213D]">
+                  সীমিত সময়ের ধামাকা ডিসকাউন্ট ও প্রমো কুপন অফার
+                </h1>
               </div>
-              <div className="w-28 h-24 rounded-xl overflow-hidden bg-slate-100 shrink-0">
-                <img
-                  src={createStudioProductSvg('headphones', '#14213D', '#286F65', 'ANC AUDIO')}
-                  alt="Smart Gadgets Showcase"
-                  className="w-full h-full object-cover"
-                />
+
+              {/* Live Countdown Timer, Coupons & Prev/Next Slide Buttons */}
+              <div className="flex flex-wrap items-center gap-2.5 tabular-nums">
+                {(() => {
+                  const activeOffer =
+                    specialOfferProducts[offerSlideIndex] || specialOfferProducts[0];
+                  const activeOfferMeta = parseProductGalleryAndOffer(activeOffer).offerMeta;
+                  const targetMs = activeOfferMeta.offerEndsAt
+                    ? new Date(activeOfferMeta.offerEndsAt).getTime()
+                    : countdownNow + 3 * 24 * 3600 * 1000;
+                  const diffSec = Math.max(0, Math.floor((targetMs - countdownNow) / 1000));
+                  const days = Math.floor(diffSec / 86400);
+                  const hours = Math.floor((diffSec % 86400) / 3600);
+                  const mins = Math.floor((diffSec % 3600) / 60);
+                  const secs = diffSec % 60;
+
+                  return (
+                    <div className="flex items-center gap-2 bg-[#14213D] text-white px-3.5 py-2 rounded-xl text-xs">
+                      <Clock className="w-3.5 h-3.5 text-emerald-400" />
+                      <span className="text-slate-300">অফার শেষ হতে বাকি:</span>
+                      <span className="font-mono font-bold text-white">
+                        {days}দিন : {String(hours).padStart(2, '0')}ঘ :{' '}
+                        {String(mins).padStart(2, '0')}মি : {String(secs).padStart(2, '0')}সে
+                      </span>
+                    </div>
+                  );
+                })()}
+
+                {coupons.slice(0, 2).map((cp) => (
+                  <button
+                    key={cp.id}
+                    type="button"
+                    onClick={() => handleCopyCoupon(cp.code)}
+                    className="px-3 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-xs flex items-center gap-2 transition-colors"
+                  >
+                    <Tag className="w-3.5 h-3.5 text-[#16A34A]" />
+                    <span className="text-slate-700">
+                      কুপন: <strong className="font-mono text-[#14213D]">{cp.code}</strong>
+                    </span>
+                    <span className="text-[11px] font-semibold text-[#286F65] inline-flex items-center gap-1">
+                      <Copy className="w-3 h-3" />
+                      <span>{copiedCouponCode === cp.code ? 'কপি হয়েছে!' : 'কপি করুন'}</span>
+                    </span>
+                  </button>
+                ))}
+
+                {specialOfferProducts.length > 1 && (
+                  <div className="flex items-center gap-1.5 ml-auto sm:ml-0">
+                    <button
+                      type="button"
+                      onClick={() => handleSelectOfferSlide(offerSlideIndex - 1)}
+                      aria-label="পূর্ববর্তী অফার স্লাইড"
+                      className="p-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-[#14213D] hover:text-white hover:border-[#14213D] text-[#14213D] transition-colors cursor-pointer"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSelectOfferSlide(offerSlideIndex + 1)}
+                      aria-label="পরবর্তী অফার স্লাইড"
+                      className="p-2 rounded-xl border border-slate-200 bg-slate-50 hover:bg-[#14213D] hover:text-white hover:border-[#14213D] text-[#14213D] transition-colors cursor-pointer"
+                    >
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
-          </div>
-        </section>
+
+            {/* Active Offer Hero Spotlight Slide */}
+            {(() => {
+              const currentOffer =
+                specialOfferProducts[offerSlideIndex] || specialOfferProducts[0];
+              if (!currentOffer) return null;
+              const parsed = parseProductGalleryAndOffer(currentOffer);
+              const effPrice =
+                currentOffer.salePriceBdt && currentOffer.salePriceBdt < currentOffer.priceBdt
+                  ? currentOffer.salePriceBdt
+                  : currentOffer.priceBdt;
+              const savedBdt = Math.max(0, currentOffer.priceBdt - effPrice);
+              const savePct =
+                savedBdt > 0 ? Math.round((savedBdt / currentOffer.priceBdt) * 100) : 0;
+              const stockBarPct = Math.min(
+                92,
+                Math.max(25, 100 - currentOffer.stockQuantity)
+              );
+              const isFreeDel =
+                Boolean(parsed.offerMeta.freeDelivery) ||
+                (settings?.sylhetDeliveryBdt === 0 &&
+                  settings?.outsideSylhetDeliveryBdt === 0);
+
+              return (
+                <div className="relative bg-[#14213D] text-white rounded-2xl p-5 sm:p-8 overflow-hidden">
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
+                    {/* Left Content (7 cols) */}
+                    <div className="lg:col-span-7 space-y-4 z-10">
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <span className="px-2.5 py-1 rounded-md bg-[#16A34A] text-white font-bold">
+                          {parsed.offerMeta.badgeText || '🔥 ফ্ল্যাশ ডিল'}
+                        </span>
+                        {savePct > 0 && (
+                          <span className="px-2.5 py-1 rounded-md bg-emerald-400/20 text-emerald-300 font-bold tabular-nums">
+                            {savePct}% ছাড় · সাশ্রয় {formatBdt(savedBdt)}
+                          </span>
+                        )}
+                        {isFreeDel && (
+                          <span className="px-2.5 py-1 rounded-md bg-white/15 text-emerald-200 font-semibold">
+                            🚚 ফ্রি ডেলিভারি
+                          </span>
+                        )}
+                        {currentOffer.categoryNameBn && (
+                          <span className="text-slate-300">
+                            · {currentOffer.categoryNameBn}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <h2
+                          onClick={() => openProductDetail(currentOffer)}
+                          className="text-xl sm:text-3xl font-bold tracking-tight text-white hover:text-emerald-300 cursor-pointer transition-colors"
+                        >
+                          {currentOffer.nameBn}
+                        </h2>
+                        <p className="text-xs sm:text-sm text-slate-300 line-clamp-2 leading-relaxed">
+                          {currentOffer.descriptionBn ||
+                            parsed.offerMeta.dealNote ||
+                            'সীমিত সময়ের বিশেষ অফার · সিলেট থেকে সারাদেশে দ্রুত হোম ডেলিভারি ও ক্যাশ অন ডেলিভারি সুবিধা।'}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-baseline gap-3 pt-1 tabular-nums">
+                        <span className="text-2xl sm:text-3xl font-bold text-emerald-400">
+                          {formatBdt(effPrice)}
+                        </span>
+                        {savedBdt > 0 && (
+                          <span className="text-sm sm:text-base text-slate-400 line-through">
+                            {formatBdt(currentOffer.priceBdt)}
+                          </span>
+                        )}
+                        <span className="text-xs text-slate-300">
+                          · স্টক বাকি: <strong>{currentOffer.stockQuantity} টি</strong>
+                        </span>
+                      </div>
+
+                      <div className="max-w-md space-y-1.5">
+                        <div className="w-full h-2 bg-white/15 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-[#16A34A] rounded-full transition-all duration-500"
+                            style={{ width: `${stockBarPct}%` }}
+                          />
+                        </div>
+                        <div className="text-[11px] text-emerald-300 font-medium">
+                          {parsed.offerMeta.dealNote ||
+                            'সীমিত সময়ের বিশেষ অফার · ক্যাশ অন ডেলিভারি সুবিধা'}
+                        </div>
+                      </div>
+
+                      <div className="pt-2 flex flex-wrap items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const defaultVar =
+                              currentOffer.variants.length > 0
+                                ? currentOffer.variants[0]
+                                : null;
+                            addToCart(currentOffer, defaultVar, 1, true);
+                          }}
+                          className="px-5 py-3 bg-[#16A34A] hover:bg-[#286F65] text-white text-xs sm:text-sm font-bold rounded-xl transition-colors inline-flex items-center gap-2 cursor-pointer"
+                        >
+                          <span>এখনই অর্ডার করুন (Buy Now)</span>
+                          <ArrowRight className="w-4 h-4" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (currentOffer.variants.length > 0) {
+                              openProductDetail(currentOffer);
+                            } else {
+                              addToCart(currentOffer, null, 1, false);
+                            }
+                          }}
+                          className="px-4 py-3 bg-white text-[#14213D] hover:bg-emerald-50 text-xs sm:text-sm font-bold rounded-xl transition-colors cursor-pointer"
+                        >
+                          অফারটি কার্টে নিন
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => openProductDetail(currentOffer)}
+                          className="px-4 py-3 bg-white/10 hover:bg-white/20 text-white text-xs sm:text-sm font-medium rounded-xl transition-colors cursor-pointer"
+                        >
+                          ছবি ও বিস্তারিত দেখুন ({parsed.imageCount}টি ছবি
+                          {parsed.videoCount > 0 ? ` · ${parsed.videoCount}টি ভিডিও` : ''})
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Right Product Visual Preview (5 cols) */}
+                    <div className="lg:col-span-5 flex justify-center">
+                      <div
+                        onClick={() => openProductDetail(currentOffer)}
+                        className="relative w-full max-w-sm aspect-4/3 rounded-2xl overflow-hidden bg-white border-2 border-white/20 shadow-lg cursor-pointer group"
+                      >
+                        <ResilientProductImage
+                          src={currentOffer.imageUrl}
+                          alt={currentOffer.nameBn}
+                          sku={currentOffer.sku}
+                        />
+                        {savePct > 0 && (
+                          <div className="absolute top-3 right-3 px-3 py-1 rounded-lg bg-[#16A34A] text-white text-xs font-bold shadow">
+                            -{savePct}% OFF
+                          </div>
+                        )}
+                        {parsed.videoCount > 0 && (
+                          <div className="absolute bottom-3 left-3 px-2.5 py-1 rounded-lg bg-[#14213D]/90 text-white text-xs font-semibold inline-flex items-center gap-1">
+                            <Play className="w-3.5 h-3.5 fill-current text-emerald-400" />
+                            <span>ভিডিও সহ দেখুন</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* All Offer Products Horizontal Auto-Sync Carousel Track */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between text-xs text-slate-600">
+                <span className="font-semibold text-[#14213D]">
+                  সকল বিশেষ অফার ও ফ্ল্যাশ ডিল স্লাইড ({specialOfferProducts.length}টি পণ্য — নতুন অফার যুক্ত হলে স্বয়ংক্রিয়ভাবে এখানে যোগ হয়)
+                </span>
+                {specialOfferProducts.length > 1 && (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleSelectOfferSlide(offerSlideIndex - 1)}
+                      className="px-2.5 py-1 rounded-lg border border-slate-200 hover:border-[#14213D] text-[#14213D] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                      <span>আগের স্লাইড</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSelectOfferSlide(offerSlideIndex + 1)}
+                      className="px-2.5 py-1 rounded-lg border border-slate-200 hover:border-[#14213D] text-[#14213D] font-semibold inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <span>পরের স্লাইড</span>
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div
+                ref={offerCarouselRef}
+                className="flex gap-4 overflow-x-auto pb-2 snap-x snap-mandatory scroll-smooth tabular-nums"
+              >
+                {specialOfferProducts.map((offerProd, idx) => {
+                  const parsed = parseProductGalleryAndOffer(offerProd);
+                  const effPrice =
+                    offerProd.salePriceBdt && offerProd.salePriceBdt < offerProd.priceBdt
+                      ? offerProd.salePriceBdt
+                      : offerProd.priceBdt;
+                  const savedBdt = Math.max(0, offerProd.priceBdt - effPrice);
+                  const savePct =
+                    savedBdt > 0
+                      ? Math.round((savedBdt / offerProd.priceBdt) * 100)
+                      : 0;
+                  const stockBarPct = Math.min(
+                    92,
+                    Math.max(25, 100 - offerProd.stockQuantity)
+                  );
+                  const isActiveSlide = idx === offerSlideIndex;
+
+                  return (
+                    <div
+                      key={offerProd.id}
+                      onClick={() => setOfferSlideIndex(idx)}
+                      className={`snap-start shrink-0 w-[85%] sm:w-[46%] lg:w-[32%] rounded-xl border p-4 flex flex-col justify-between gap-3 transition-all cursor-pointer ${
+                        isActiveSlide
+                          ? 'border-[#16A34A] bg-emerald-50/40 ring-2 ring-[#16A34A]/25'
+                          : 'border-slate-200/90 bg-slate-50/60 hover:border-[#286F65]'
+                      }`}
+                    >
+                      <div className="flex gap-3.5">
+                        <div
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openProductDetail(offerProd);
+                          }}
+                          className="relative w-28 h-24 rounded-lg overflow-hidden bg-white border border-slate-200 shrink-0 cursor-pointer"
+                        >
+                          <ResilientProductImage
+                            src={offerProd.imageUrl}
+                            alt={offerProd.nameBn}
+                            sku={offerProd.sku}
+                          />
+                          <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-[#14213D] text-white text-[10px] font-bold">
+                            {parsed.offerMeta.badgeText || '🔥 ফ্ল্যাশ ডিল'}
+                          </span>
+                          {parsed.videoCount > 0 && (
+                            <span className="absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded bg-[#16A34A] text-white text-[9px] font-bold inline-flex items-center gap-0.5">
+                              <Play className="w-2.5 h-2.5 fill-current" /> ভিডিও
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex-1 min-w-0 space-y-1">
+                          <div className="flex items-center gap-1.5">
+                            {savePct > 0 && (
+                              <span className="px-2 py-0.5 rounded bg-emerald-100 text-[#16A34A] text-[10px] font-bold">
+                                {savePct}% ছাড় · সাশ্রয় {formatBdt(savedBdt)}
+                              </span>
+                            )}
+                          </div>
+                          <h3
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openProductDetail(offerProd);
+                            }}
+                            className="text-sm font-bold text-[#14213D] hover:text-[#286F65] cursor-pointer line-clamp-1"
+                          >
+                            {offerProd.nameBn}
+                          </h3>
+                          <div className="flex items-baseline gap-2">
+                            <span className="text-base font-bold text-[#14213D]">
+                              {formatBdt(effPrice)}
+                            </span>
+                            {savedBdt > 0 && (
+                              <span className="text-xs text-slate-400 line-through">
+                                {formatBdt(offerProd.priceBdt)}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-[#286F65] font-medium line-clamp-1">
+                            {parsed.offerMeta.dealNote ||
+                              'সীমিত সময়ের বিশেষ অফার · ক্যাশ অন ডেলিভারি'}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Stock Progress Bar & Actions */}
+                      <div className="space-y-2.5 pt-2 border-t border-slate-200/70">
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-[11px] text-slate-600">
+                            <span>
+                              অফার স্টক বাকি: <strong>{offerProd.stockQuantity} টি</strong>
+                            </span>
+                            <span className="text-[#286F65] font-semibold">
+                              {parsed.imageCount}টি ছবি
+                              {parsed.videoCount > 0 ? ` · ${parsed.videoCount}টি ভিডিও` : ''}
+                            </span>
+                          </div>
+                          <div className="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-[#286F65] rounded-full"
+                              style={{ width: `${stockBarPct}%` }}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openProductDetail(offerProd);
+                            }}
+                            className="flex-1 py-2 px-3 bg-white border border-slate-300 hover:border-[#14213D] text-[#14213D] text-xs font-semibold rounded-lg transition-colors"
+                          >
+                            ছবি ও বিস্তারিত দেখুন
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (offerProd.variants.length > 0) {
+                                openProductDetail(offerProd);
+                              } else {
+                                addToCart(offerProd, null, 1, false);
+                              }
+                            }}
+                            className="flex-1 py-2 px-3 bg-[#14213D] hover:bg-[#286F65] text-white text-xs font-semibold rounded-lg transition-colors"
+                          >
+                            অফারটি কার্টে নিন
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Interactive Slide Pagination Dots */}
+              {specialOfferProducts.length > 1 && (
+                <div className="flex items-center justify-center gap-1.5 pt-1 flex-wrap">
+                  {specialOfferProducts.slice(0, 20).map((offerProd, idx) => (
+                    <button
+                      key={offerProd.id}
+                      type="button"
+                      onClick={() => handleSelectOfferSlide(idx)}
+                      aria-label={`অফার স্লাইড ${idx + 1}: ${offerProd.nameBn}`}
+                      className={`h-2 rounded-full transition-all cursor-pointer ${
+                        idx === offerSlideIndex
+                          ? 'w-7 bg-[#16A34A]'
+                          : 'w-2 bg-slate-300 hover:bg-slate-400'
+                      }`}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
 
         {/* Department / Category Shortcuts */}
         <section aria-label="বিভাগ সমূহ">
@@ -1239,191 +1601,6 @@ export default function App() {
             })}
           </div>
         </section>
-
-        {/* 3B. UPGRADED SPECIAL OFFER & FLASH DEAL SPOTLIGHT SECTION */}
-        {specialOfferProducts.length > 0 && (
-          <section
-            aria-label="বিশেষ অফার ও ফ্ল্যাশ ডিল"
-            className="bg-white rounded-2xl border border-[#286F65]/35 p-5 sm:p-6 space-y-5 shadow-xs"
-          >
-            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-4">
-              <div className="space-y-1">
-                <div className="inline-flex items-center gap-1.5 text-xs font-bold text-[#16A34A]">
-                  <Sparkles className="w-4 h-4" />
-                  <span>বিশেষ অফার ও ফ্ল্যাশ ডিল (Special Offers &amp; Flash Deals)</span>
-                </div>
-                <h2 className="text-lg sm:text-xl font-bold text-[#14213D]">
-                  সীমিত সময়ের ধামাকা ডিসকাউন্ট ও প্রমো কুপন অফার
-                </h2>
-              </div>
-
-              {/* Live Countdown Timer & Active Promo Coupons */}
-              <div className="flex flex-wrap items-center gap-3 tabular-nums">
-                {(() => {
-                  const firstOfferMeta = parseProductGalleryAndOffer(
-                    specialOfferProducts[0]
-                  ).offerMeta;
-                  const targetMs = firstOfferMeta.offerEndsAt
-                    ? new Date(firstOfferMeta.offerEndsAt).getTime()
-                    : countdownNow + 3 * 24 * 3600 * 1000;
-                  const diffSec = Math.max(0, Math.floor((targetMs - countdownNow) / 1000));
-                  const days = Math.floor(diffSec / 86400);
-                  const hours = Math.floor((diffSec % 86400) / 3600);
-                  const mins = Math.floor((diffSec % 3600) / 60);
-                  const secs = diffSec % 60;
-
-                  return (
-                    <div className="flex items-center gap-2 bg-[#14213D] text-white px-3.5 py-2 rounded-xl text-xs">
-                      <Clock className="w-3.5 h-3.5 text-emerald-400" />
-                      <span className="text-slate-300">অফার শেষ হতে বাকি:</span>
-                      <span className="font-mono font-bold text-white">
-                        {days}দিন : {String(hours).padStart(2, '0')}ঘ :{' '}
-                        {String(mins).padStart(2, '0')}মি : {String(secs).padStart(2, '0')}সে
-                      </span>
-                    </div>
-                  );
-                })()}
-
-                {coupons.slice(0, 2).map((cp) => (
-                  <button
-                    key={cp.id}
-                    type="button"
-                    onClick={() => handleCopyCoupon(cp.code)}
-                    className="px-3 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-xs flex items-center gap-2 transition-colors"
-                  >
-                    <Tag className="w-3.5 h-3.5 text-[#16A34A]" />
-                    <span className="text-slate-700">
-                      কুপন: <strong className="font-mono text-[#14213D]">{cp.code}</strong>
-                    </span>
-                    <span className="text-[11px] font-semibold text-[#286F65] inline-flex items-center gap-1">
-                      <Copy className="w-3 h-3" />
-                      <span>{copiedCouponCode === cp.code ? 'কপি হয়েছে!' : 'কপি করুন'}</span>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 tabular-nums">
-              {specialOfferProducts.slice(0, 3).map((offerProd) => {
-                const parsed = parseProductGalleryAndOffer(offerProd);
-                const effPrice =
-                  offerProd.salePriceBdt && offerProd.salePriceBdt < offerProd.priceBdt
-                    ? offerProd.salePriceBdt
-                    : offerProd.priceBdt;
-                const savedBdt = Math.max(0, offerProd.priceBdt - effPrice);
-                const savePct =
-                  savedBdt > 0
-                    ? Math.round((savedBdt / offerProd.priceBdt) * 100)
-                    : 0;
-                const stockBarPct = Math.min(
-                  92,
-                  Math.max(25, 100 - offerProd.stockQuantity)
-                );
-
-                return (
-                  <div
-                    key={offerProd.id}
-                    className="rounded-xl border border-slate-200/90 bg-slate-50/60 p-4 flex flex-col justify-between gap-3 hover:border-[#286F65] transition-colors"
-                  >
-                    <div className="flex gap-3.5">
-                      <div
-                        onClick={() => openProductDetail(offerProd)}
-                        className="relative w-28 h-24 rounded-lg overflow-hidden bg-white border border-slate-200 shrink-0 cursor-pointer"
-                      >
-                        <ResilientProductImage
-                          src={offerProd.imageUrl}
-                          alt={offerProd.nameBn}
-                          sku={offerProd.sku}
-                        />
-                        <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-[#14213D] text-white text-[10px] font-bold">
-                          {parsed.offerMeta.badgeText || '🔥 ফ্ল্যাশ ডিল'}
-                        </span>
-                        {parsed.videoCount > 0 && (
-                          <span className="absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded bg-[#16A34A] text-white text-[9px] font-bold inline-flex items-center gap-0.5">
-                            <Play className="w-2.5 h-2.5 fill-current" /> ভিডিও
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="flex-1 min-w-0 space-y-1">
-                        <div className="flex items-center gap-1.5">
-                          {savePct > 0 && (
-                            <span className="px-2 py-0.5 rounded bg-emerald-100 text-[#16A34A] text-[10px] font-bold">
-                              {savePct}% ছাড় · সাশ্রয় {formatBdt(savedBdt)}
-                            </span>
-                          )}
-                        </div>
-                        <h3
-                          onClick={() => openProductDetail(offerProd)}
-                          className="text-sm font-bold text-[#14213D] hover:text-[#286F65] cursor-pointer line-clamp-1"
-                        >
-                          {offerProd.nameBn}
-                        </h3>
-                        <div className="flex items-baseline gap-2">
-                          <span className="text-base font-bold text-[#14213D]">
-                            {formatBdt(effPrice)}
-                          </span>
-                          {savedBdt > 0 && (
-                            <span className="text-xs text-slate-400 line-through">
-                              {formatBdt(offerProd.priceBdt)}
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-[11px] text-[#286F65] font-medium line-clamp-1">
-                          {parsed.offerMeta.dealNote ||
-                            'সীমিত সময়ের বিশেষ অফার · ক্যাশ অন ডেলিভারি'}
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* Stock Progress Bar & Actions */}
-                    <div className="space-y-2.5 pt-2 border-t border-slate-200/70">
-                      <div className="space-y-1">
-                        <div className="flex justify-between text-[11px] text-slate-600">
-                          <span>অফার স্টক বাকি: <strong>{offerProd.stockQuantity} টি</strong></span>
-                          <span className="text-[#286F65] font-semibold">
-                            {parsed.imageCount}টি ছবি
-                            {parsed.videoCount > 0 ? ` · ${parsed.videoCount}টি ভিডিও` : ''}
-                          </span>
-                        </div>
-                        <div className="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-[#286F65] rounded-full"
-                            style={{ width: `${stockBarPct}%` }}
-                          />
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => openProductDetail(offerProd)}
-                          className="flex-1 py-2 px-3 bg-white border border-slate-300 hover:border-[#14213D] text-[#14213D] text-xs font-semibold rounded-lg transition-colors"
-                        >
-                          ছবি ও বিস্তারিত দেখুন
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (offerProd.variants.length > 0) {
-                              openProductDetail(offerProd);
-                            } else {
-                              addToCart(offerProd, null, 1, false);
-                            }
-                          }}
-                          className="flex-1 py-2 px-3 bg-[#14213D] hover:bg-[#286F65] text-white text-xs font-semibold rounded-lg transition-colors"
-                        >
-                          অফারটি কার্টে নিন
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        )}
 
         {/* 4. MAIN PRODUCT CATALOG SECTION */}
         <section id="catalog" className="space-y-6">
@@ -1694,16 +1871,6 @@ export default function App() {
                 >
                   অর্ডার ট্র্যাকিং (Track Order)
                 </button>
-              </li>
-              <li>
-                <a
-                  href="/sitemap.xml"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="hover:text-white transition-colors"
-                >
-                  XML Sitemap
-                </a>
               </li>
             </ul>
           </div>

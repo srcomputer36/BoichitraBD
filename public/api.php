@@ -39,7 +39,7 @@ if ($earlyScriptDir !== '' && strpos($earlyUri, $earlyScriptDir) === 0) {
   $earlyUri = substr($earlyUri, strlen($earlyScriptDir)) ?: '/';
 }
 $earlyStorefrontCache = $storageDir . '/storefront_fast_cache.json';
-$earlyBkrSynced = $storageDir . '/.bkr_auto_synced_v2';
+$earlyBkrSynced = $storageDir . '/.bkr_auto_synced_v3';
 if (
   $earlyMethod === 'GET' &&
   $earlyUri === '/api/storefront' &&
@@ -859,8 +859,10 @@ $body = json_decode($rawInput ?: '{}', true);
 if (!is_array($body)) $body = [];
 
 $storefrontCacheFile = $storageDir . '/storefront_fast_cache.json';
+$adminOverviewCacheFile = $storageDir . '/admin_overview_fast_cache.json';
 if ($method !== 'GET' && $requestUri !== '/api/compiled-bundle') {
   @unlink($storefrontCacheFile);
+  @unlink($adminOverviewCacheFile);
 }
 
 // Server-side pre-compiled storefront & admin JS bundle cache (auto-invalidates on any /src/* change)
@@ -1114,7 +1116,10 @@ if ($requestUri === '/api/bangla-qr-image' && $method === 'GET') {
     echo base64_decode($m[2]);
     exit;
   }
-  if (strpos($rawUrl, 'http') === 0 || strpos($rawUrl, '/') === 0) {
+  if (
+    strpos($rawUrl, 'http') === 0 ||
+    (strpos($rawUrl, '/') === 0 && $rawUrl !== '/api/bangla-qr-image')
+  ) {
     header('Location: ' . $rawUrl, true, 302);
     exit;
   }
@@ -1612,16 +1617,29 @@ if ($requestUri === '/api/orders/track' && $method === 'POST') {
 if ($requestUri === '/api/admin/overview' && $method === 'GET') {
   $admin = requireAdmin($pdo);
 
+  if (file_exists($adminOverviewCacheFile) && (time() - @filemtime($adminOverviewCacheFile) < 30)) {
+    $cachedRaw = @file_get_contents($adminOverviewCacheFile);
+    $cachedArr = $cachedRaw ? json_decode($cachedRaw, true) : null;
+    if (is_array($cachedArr)) {
+      $cachedArr['adminUser'] = [
+        'email' => $admin['email'],
+        'name' => $admin['name'],
+        'role' => $admin['role'],
+      ];
+      sendJson($cachedArr);
+    }
+  }
+
   $allOrders = $pdo->query("SELECT * FROM orders ORDER BY id DESC")->fetchAll();
   $allItems = $pdo->query("SELECT * FROM order_items")->fetchAll();
   $allHist = $pdo->query("SELECT * FROM order_status_history ORDER BY id DESC")->fetchAll();
   $allCustomers = $pdo->query("SELECT * FROM customers ORDER BY id DESC")->fetchAll();
-  $allProducts = $pdo->query("SELECT * FROM products ORDER BY id DESC")->fetchAll();
+  $allProducts = $pdo->query("SELECT * FROM products ORDER BY updated_at DESC, id DESC")->fetchAll();
   $allVariants = $pdo->query("SELECT * FROM product_variants")->fetchAll();
   $allCategories = $pdo->query("SELECT * FROM categories ORDER BY sort_order ASC, id ASC")->fetchAll();
   $settingsRow = $pdo->query("SELECT * FROM store_settings LIMIT 1")->fetch();
   $allCoupons = $pdo->query("SELECT * FROM coupons ORDER BY id DESC")->fetchAll();
-  $allLogs = $pdo->query("SELECT * FROM audit_logs ORDER BY id DESC LIMIT 100")->fetchAll();
+  $allLogs = $pdo->query("SELECT * FROM audit_logs ORDER BY id DESC LIMIT 80")->fetchAll();
 
   $itemsByOrder = [];
   foreach ($allItems as $i) {
@@ -1661,11 +1679,9 @@ if ($requestUri === '/api/admin/overview' && $method === 'GET') {
   }
 
   $catMap = [];
-  $formattedCategories = [];
   foreach ($allCategories as $c) {
     $fc = formatCategoryRow($c);
     $catMap[$fc['id']] = $fc;
-    $formattedCategories[] = $fc;
   }
 
   $grossOrderValueBdt = 0;
@@ -1720,14 +1736,53 @@ if ($requestUri === '/api/admin/overview' && $method === 'GET') {
     ];
   }
 
+  $demoSkus = [
+    'BBD-HD-101' => true, 'BBD-GD-201' => true, 'BBD-WT-301' => true, 'BBD-PJ-401' => true,
+    'BBD-GD-202' => true, 'BBD-BG-501' => true, 'BBD-GD-203' => true, 'BBD-FS-102' => true,
+    'BBD-BK-101' => true, 'BBD-BK-102' => true, 'BBD-BK-201' => true, 'BBD-BK-202' => true,
+    'BBD-BK-301' => true, 'BBD-BK-401' => true,
+  ];
+  $visibleProducts = array_values(array_filter($allProducts, function ($p) use ($demoSkus) {
+    $isPub = (bool)(int)$p['is_published'];
+    $skuUp = strtoupper(trim((string)($p['sku'] ?? '')));
+    return $isPub || empty($demoSkus[$skuUp]);
+  }));
+
+  usort($visibleProducts, function (array $a, array $b): int {
+    $ga = json_decode((string)($a['gallery_urls_json'] ?? ''), true);
+    $gb = json_decode((string)($b['gallery_urls_json'] ?? ''), true);
+    $rankA = (is_array($ga) && isset($ga['bkrSortRank']) && is_numeric($ga['bkrSortRank'])) ? (int)$ga['bkrSortRank'] : null;
+    $rankB = (is_array($gb) && isset($gb['bkrSortRank']) && is_numeric($gb['bkrSortRank'])) ? (int)$gb['bkrSortRank'] : null;
+    if ($rankA === null && $rankB === null) return (int)$b['id'] - (int)$a['id'];
+    if ($rankA === null) return -1;
+    if ($rankB === null) return 1;
+    if ($rankA !== $rankB) return $rankA - $rankB;
+    return (int)$b['id'] - (int)$a['id'];
+  });
+
   $lowStockCount = 0;
   $formattedProducts = [];
-  foreach ($allProducts as $p) {
+  $prodCountByCat = [];
+  $syncedBkrCount = 0;
+  foreach ($visibleProducts as $p) {
     if ((int)$p['stock_quantity'] <= (int)$p['low_stock_threshold']) {
       $lowStockCount++;
     }
+    if (stripos((string)$p['sku'], 'BBD-BK-') === 0 && (int)$p['is_published'] === 1) {
+      $syncedBkrCount++;
+    }
     $pid = (int)$p['id'];
+    $cid = (int)$p['category_id'];
+    $prodCountByCat[$cid] = ($prodCountByCat[$cid] ?? 0) + 1;
     $formattedProducts[] = formatProductRow($p, $varsByProd[$pid] ?? [], $catMap);
+  }
+
+  $formattedCategories = [];
+  foreach ($catMap as $cid => $fc) {
+    $cnt = $prodCountByCat[$cid] ?? 0;
+    if (!$fc['isActive'] && $cnt === 0) continue;
+    $fc['productCount'] = $cnt;
+    $formattedCategories[] = $fc;
   }
 
   $formattedCustomers = array_map(fn($c) => [
@@ -1745,7 +1800,25 @@ if ($requestUri === '/api/admin/overview' && $method === 'GET') {
     'lastOrderAt' => $c['last_order_at'],
   ], $allCustomers);
 
-  sendJson([
+  $slimSettings = formatSettingsRow($settingsRow);
+  if (
+    !empty($slimSettings['banglaQrImageUrl']) &&
+    strlen((string)$slimSettings['banglaQrImageUrl']) > 2000 &&
+    strpos((string)$slimSettings['banglaQrImageUrl'], 'data:image/') === 0
+  ) {
+    $slimSettings['banglaQrImageUrl'] = '/api/bangla-qr-image';
+  }
+
+  $cfg = getBusinessKoroPhpConfig();
+  $lastSyncLog = null;
+  foreach ($allLogs as $l) {
+    if (($l['action'] ?? '') === 'BUSINESSKORO_SYNC') {
+      $lastSyncLog = $l;
+      break;
+    }
+  }
+
+  $overviewPayload = [
     'stats' => [
       'totalOrders' => count($allOrders),
       'awaitingConfirmation' => $awaitingConfirmation,
@@ -1761,7 +1834,7 @@ if ($requestUri === '/api/admin/overview' && $method === 'GET') {
     'customers' => $formattedCustomers,
     'products' => $formattedProducts,
     'categories' => $formattedCategories,
-    'settings' => formatSettingsRow($settingsRow),
+    'settings' => $slimSettings,
     'coupons' => array_map('formatCouponRow', $allCoupons),
     'auditLogs' => array_map(fn($l) => [
       'id' => (int)$l['id'],
@@ -1772,12 +1845,27 @@ if ($requestUri === '/api/admin/overview' && $method === 'GET') {
       'details' => $l['details'],
       'createdAt' => $l['created_at'],
     ], $allLogs),
+    'bkStatus' => [
+      'hasServerApiKey' => !empty($cfg['apiKey']),
+      'endpointUrl' => $cfg['productsUrl'],
+      'syncedProductsCount' => $syncedBkrCount,
+      'catalogFeedAvailableCount' => max(54, $syncedBkrCount),
+      'lastSyncAt' => $lastSyncLog['created_at'] ?? null,
+      'lastSyncDetails' => $lastSyncLog['details'] ?? null,
+    ],
     'adminUser' => [
       'email' => $admin['email'],
       'name' => $admin['name'],
       'role' => $admin['role'],
     ],
-  ]);
+  ];
+
+  @file_put_contents(
+    $adminOverviewCacheFile,
+    json_encode($overviewPayload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+  );
+
+  sendJson($overviewPayload);
 }
 
 if ($requestUri === '/api/admin/products' && $method === 'POST') {
@@ -2041,6 +2129,11 @@ if (preg_match('#^/api/admin/orders/(\d+)$#', $requestUri, $m) && $method === 'P
 if ($requestUri === '/api/admin/settings' && $method === 'PUT') {
   $admin = requireAdmin($pdo);
   $now = gmdate('Y-m-d\TH:i:s\Z');
+  if (($body['banglaQrImageUrl'] ?? '') === '/api/bangla-qr-image') {
+    $existingRow = $pdo->query("SELECT * FROM store_settings LIMIT 1")->fetch();
+    $existingFormatted = $existingRow ? formatSettingsRow($existingRow) : [];
+    $body['banglaQrImageUrl'] = $existingFormatted['banglaQrImageUrl'] ?? '';
+  }
   $serializedPolicy = serializeSettingsPolicy($body);
 
   $pdo->prepare("UPDATE store_settings SET contact_phone = ?, contact_email = ?, business_address = ?, sylhet_delivery_bdt = ?, outside_sylhet_delivery_bdt = ?, free_delivery_threshold_bdt = ?, cod_enabled = ?, bkash_enabled = ?, nagad_enabled = ?, return_policy_text = ?, updated_at = ?")

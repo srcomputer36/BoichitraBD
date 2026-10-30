@@ -49,8 +49,45 @@ import {
   buildProductPromoUrl,
   copyTextToClipboard,
 } from '../lib/visuals.ts';
-import * as XLSX from 'xlsx';
 import { ResilientProductImage } from './ProductVisualCard.tsx';
+
+const ADMIN_OVERVIEW_CACHE_KEY = 'boichitra_admin_fast_cache_v2';
+
+function readCachedAdminOverview(): any | null {
+  try {
+    const token = localStorage.getItem('bbd_admin_session_token_v1') || '';
+    const raw = localStorage.getItem(ADMIN_OVERVIEW_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.adminUser && parsed.stats && Array.isArray(parsed.products)) {
+      if (token || parsed.cookieAuth) {
+        return parsed;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function writeCachedAdminOverview(data: any): void {
+  try {
+    localStorage.setItem(
+      ADMIN_OVERVIEW_CACHE_KEY,
+      JSON.stringify({
+        cookieAuth: true,
+        adminUser: data.adminUser,
+        stats: data.stats,
+        orders: data.orders || [],
+        customers: data.customers || [],
+        products: data.products || [],
+        categories: data.categories || [],
+        coupons: data.coupons || [],
+        settings: data.settings || null,
+        auditLogs: (data.auditLogs || []).slice(0, 50),
+        bkStatus: data.bkStatus || null,
+      })
+    );
+  } catch {}
+}
 
 interface AdminPanelProps {
   onBackToStore: () => void;
@@ -79,6 +116,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   onBackToStore,
   onStoreUpdated,
 }) => {
+  const initialAdminCache = React.useMemo(() => readCachedAdminOverview(), []);
+
   // Site-Native Admin Session State (in memory + localStorage + HttpOnly cookie on server)
   const [sessionToken, setSessionToken] = useState<string>(() => {
     try {
@@ -87,9 +126,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       return '';
     }
   });
-  const [adminUser, setAdminUser] = useState<AdminUserInfo | null>(null);
+  const [adminUser, setAdminUser] = useState<AdminUserInfo | null>(
+    () => initialAdminCache?.adminUser || null
+  );
   const [isSetupComplete, setIsSetupComplete] = useState<boolean>(true);
-  const [authLoading, setAuthLoading] = useState(true);
+  const [authLoading, setAuthLoading] = useState<boolean>(
+    () => !Boolean(initialAdminCache?.adminUser && initialAdminCache?.stats)
+  );
   const [authError, setAuthError] = useState('');
   const [authSubmitting, setAuthSubmitting] = useState(false);
 
@@ -103,8 +146,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   // Change Password Form Inputs (inside Settings Tab)
   const [currentPassword, setCurrentPassword] = useState('');
-  const [newAdminEmail, setNewAdminEmail] = useState('');
-  const [newAdminName, setNewAdminName] = useState('');
+  const [newAdminEmail, setNewAdminEmail] = useState<string>(
+    () => initialAdminCache?.adminUser?.email || ''
+  );
+  const [newAdminName, setNewAdminName] = useState<string>(
+    () => initialAdminCache?.adminUser?.name || ''
+  );
   const [newPassword, setNewPassword] = useState('');
   const [changingPassword, setChangingPassword] = useState(false);
 
@@ -113,14 +160,30 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   >('dashboard');
 
   const [loadingData, setLoadingData] = useState(false);
-  const [stats, setStats] = useState<AdminStats | null>(null);
-  const [orders, setOrders] = useState<OrderRecord[]>([]);
-  const [customers, setCustomers] = useState<CustomerRecord[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [coupons, setCoupons] = useState<Coupon[]>([]);
-  const [settings, setSettings] = useState<StoreSettings | null>(null);
-  const [auditLogs, setAuditLogs] = useState<AuditLogRecord[]>([]);
+  const [stats, setStats] = useState<AdminStats | null>(
+    () => initialAdminCache?.stats || null
+  );
+  const [orders, setOrders] = useState<OrderRecord[]>(
+    () => initialAdminCache?.orders || []
+  );
+  const [customers, setCustomers] = useState<CustomerRecord[]>(
+    () => initialAdminCache?.customers || []
+  );
+  const [products, setProducts] = useState<Product[]>(
+    () => initialAdminCache?.products || []
+  );
+  const [categories, setCategories] = useState<Category[]>(
+    () => initialAdminCache?.categories || []
+  );
+  const [coupons, setCoupons] = useState<Coupon[]>(
+    () => initialAdminCache?.coupons || []
+  );
+  const [settings, setSettings] = useState<StoreSettings | null>(
+    () => initialAdminCache?.settings || null
+  );
+  const [auditLogs, setAuditLogs] = useState<AuditLogRecord[]>(
+    () => initialAdminCache?.auditLogs || []
+  );
   const [feedbackBanner, setFeedbackBanner] = useState<{
     type: 'success' | 'error';
     text: string;
@@ -285,7 +348,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     catalogFeedAvailableCount: number;
     lastSyncAt: string | null;
     lastSyncDetails: string | null;
-  } | null>(null);
+  } | null>(() => initialAdminCache?.bkStatus || null);
   const [bkMarkupPct, setBkMarkupPct] = useState<number>(0);
   const [bkFixedMarkupBdt, setBkFixedMarkupBdt] = useState<number>(0);
   const [bkAutoPublish, setBkAutoPublish] = useState<boolean>(true);
@@ -312,24 +375,42 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   );
 
   const fetchAdminOverview = useCallback(
-    async (overrideToken?: string) => {
+    async (overrideToken?: string, silentAuthCheck = false): Promise<boolean> => {
       setLoadingData(true);
-      setAuthError('');
+      if (!silentAuthCheck) {
+        setAuthError('');
+      }
       try {
         const tokenToUse = overrideToken ?? sessionToken;
         const headers: Record<string, string> = {};
         if (tokenToUse) {
           headers['Authorization'] = `Bearer ${tokenToUse}`;
         }
-        const res = await fetch('/api/admin/overview', {
-          headers,
-          credentials: 'include',
-          cache: 'no-store',
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.error || 'অ্যাডমিন প্যানেলে প্রবেশের অনুমতি নেই।');
+
+        let data: any = null;
+        const win = window as any;
+        if (win.__BOICHITRA_ADMIN_OVERVIEW_PREFETCH__) {
+          const prefetched = win.__BOICHITRA_ADMIN_OVERVIEW_PREFETCH__;
+          win.__BOICHITRA_ADMIN_OVERVIEW_PREFETCH__ = null;
+          const resolved = await prefetched;
+          data = resolved?.data?.stats ? resolved.data : resolved;
         }
+
+        if (!data || !data.stats) {
+          const res = await fetch('/api/admin/overview', {
+            headers,
+            credentials: 'include',
+            cache: 'no-store',
+          });
+          data = await res.json();
+          if (!res.ok) {
+            if (silentAuthCheck && res.status === 401) {
+              return false;
+            }
+            throw new Error(data.error || 'অ্যাডমিন প্যানেলে প্রবেশের অনুমতি নেই।');
+          }
+        }
+
         setStats(data.stats);
         setOrders(data.orders || []);
         setCustomers(data.customers || []);
@@ -343,20 +424,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           setNewAdminEmail(data.adminUser.email || '');
           setNewAdminName(data.adminUser.name || '');
         }
-        try {
-          const bkRes = await fetch('/api/admin/businesskoro/status', {
-            headers,
-            credentials: 'include',
-          });
-          if (bkRes.ok) {
-            const bkData = await bkRes.json();
-            setBkStatus(bkData);
-          }
-        } catch {
-          // ignore status fetch error
+        if (data.bkStatus) {
+          setBkStatus(data.bkStatus);
         }
+        writeCachedAdminOverview(data);
+        return true;
       } catch (err: any) {
-        setAuthError(err.message || 'অ্যাডমিন যাচাইকরণ ব্যর্থ হয়েছে।');
+        if (!silentAuthCheck) {
+          setAuthError(err.message || 'অ্যাডমিন যাচাইকরণ ব্যর্থ হয়েছে।');
+        }
+        return false;
       } finally {
         setLoadingData(false);
       }
@@ -403,7 +480,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   useEffect(() => {
     (async () => {
-      setAuthLoading(true);
+      if (!readCachedAdminOverview()) {
+        setAuthLoading(true);
+      }
       try {
         let savedToken = '';
         try {
@@ -411,6 +490,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         } catch {
           // ignore
         }
+
+        // Fast 1-round-trip path: fetch /api/admin/overview directly
+        const overviewSuccess = await fetchAdminOverview(savedToken || undefined, true);
+        if (overviewSuccess) {
+          setIsSetupComplete(true);
+          return;
+        }
+
+        // Only if unauthenticated (401), check whether initial admin account setup is required
+        try {
+          localStorage.removeItem(ADMIN_OVERVIEW_CACHE_KEY);
+        } catch {}
+        setAdminUser(null);
+        setStats(null);
+
         const statusHeaders: Record<string, string> = {};
         if (savedToken) {
           statusHeaders['Authorization'] = `Bearer ${savedToken}`;
@@ -530,6 +624,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setSessionToken('');
     try {
       localStorage.removeItem('bbd_admin_session_token_v1');
+      localStorage.removeItem(ADMIN_OVERVIEW_CACHE_KEY);
     } catch {
       // ignore
     }
@@ -575,7 +670,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  const generateClientSideXlsx = (type: 'customers' | 'orders') => {
+  const generateClientSideXlsx = async (type: 'customers' | 'orders') => {
+    const XLSX = await import('xlsx');
     const dateStr = new Date().toISOString().slice(0, 10);
     const workbook = XLSX.utils.book_new();
 
@@ -675,7 +771,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       });
       const contentType = res.headers.get('content-type') || '';
       if (!res.ok || !contentType.includes('spreadsheetml')) {
-        generateClientSideXlsx(type);
+        await generateClientSideXlsx(type);
       } else {
         const blob = await res.blob();
         const downloadUrl = URL.createObjectURL(blob);
@@ -698,7 +794,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       await fetchAdminOverview();
     } catch {
       try {
-        generateClientSideXlsx(type);
+        await generateClientSideXlsx(type);
         setFeedbackBanner({
           type: 'success',
           text: `${type === 'customers' ? 'কাস্টমার' : 'অর্ডার'} ডেটা সফলভাবে Excel (.xlsx) ফাইলে ডাউনলোড হয়েছে।`,
@@ -782,7 +878,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       isFeatured: true,
       isNewArrival: true,
       isBestSeller: false,
-      isSpecialOffer: false,
+      isSpecialOffer: activeTab === 'offers',
       isSeasonal: false,
       isPublished: true,
       seoTitle: '',
@@ -1045,12 +1141,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         finalSalePriceBdt = null;
       }
 
+      const autoSpecialOffer =
+        Boolean(productForm.isSpecialOffer) ||
+        activeTab === 'offers' ||
+        (!productForm.id && finalSalePriceBdt !== null && finalSalePriceBdt < finalPriceBdt);
+
       const res = await fetch('/api/admin/products', {
         method: 'POST',
         headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         credentials: 'include',
         body: JSON.stringify({
           ...productForm,
+          isSpecialOffer: autoSpecialOffer,
           name: (productForm.name || productForm.nameBn).trim(),
           nameBn: (productForm.nameBn || productForm.name).trim(),
           description: (productForm.description || productForm.name || productForm.nameBn).trim(),
@@ -1167,6 +1269,42 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setFeedbackBanner({
         type: 'error',
         text: err.message || 'ফ্রি ডেলিভারি আপডেট ব্যর্থ হয়েছে।',
+      });
+    }
+  };
+
+  const handleQuickSpecialOfferToggle = async (prod: Product) => {
+    const nextSpecialOffer = !prod.isSpecialOffer;
+    try {
+      const res = await fetch('/api/admin/products', {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'include',
+        body: JSON.stringify({
+          ...prod,
+          isSpecialOffer: nextSpecialOffer,
+          variants: prod.variants || [],
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'অফার স্ট্যাটাস আপডেট করা যায়নি।');
+      if (data.product) {
+        setProducts((prev) =>
+          prev.map((item) => (item.id === data.product.id ? data.product : item))
+        );
+      }
+      setFeedbackBanner({
+        type: 'success',
+        text: nextSpecialOffer
+          ? `🔥 "${prod.nameBn}" পণ্যটি বিশেষ অফার স্লাইডারে যুক্ত করা হয়েছে!`
+          : `"${prod.nameBn}" পণ্যটি বিশেষ অফার স্লাইডার থেকে সরানো হয়েছে।`,
+      });
+      await fetchAdminOverview();
+      onStoreUpdated();
+    } catch (err: any) {
+      setFeedbackBanner({
+        type: 'error',
+        text: err.message || 'অফার স্ট্যাটাস আপডেট ব্যর্থ হয়েছে।',
       });
     }
   };
@@ -2899,9 +3037,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </div>
 
                       <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/70 text-xs">
-                        <span className="text-slate-500">
-                          মিডিয়া: {parsed.imageCount} ছবি · {parsed.videoCount} ভিডিও
-                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleQuickSpecialOfferToggle(p)}
+                          className={`px-2.5 py-1 rounded-lg font-bold text-[11px] border transition cursor-pointer ${
+                            p.isSpecialOffer
+                              ? 'bg-[#16A34A] text-white border-[#16A34A]'
+                              : 'bg-white text-slate-700 border-slate-300 hover:border-[#286F65] hover:text-[#006A4E]'
+                          }`}
+                        >
+                          {p.isSpecialOffer
+                            ? '🔥 স্লাইডে যুক্ত আছে ✓'
+                            : '+ অফার স্লাইডে যোগ করুন'}
+                        </button>
                         <div className="flex items-center gap-1.5">
                           <button
                             type="button"
