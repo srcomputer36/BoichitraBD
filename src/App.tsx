@@ -66,7 +66,7 @@ const AdminPanel = React.lazy(() =>
 );
 
 const ITEMS_PER_PAGE = 12;
-const STOREFRONT_CACHE_KEY = 'boichitra_storefront_fast_v5';
+const STOREFRONT_CACHE_KEY = 'boichitra_storefront_fast_v6';
 
 function readCachedStorefront(): {
   settings: StoreSettings | null;

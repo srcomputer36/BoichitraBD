@@ -45,7 +45,7 @@
 
         try {
           window.__BOICHITRA_STOREFRONT_PREFETCH__ = window
-            .fetch('/api/storefront')
+            .fetch('/api/storefront', { cache: 'no-store' })
             .then(function (r) {
               return r.ok ? r.json() : null;
             })

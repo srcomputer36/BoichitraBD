@@ -45,11 +45,12 @@ if (
   $earlyUri === '/api/storefront' &&
   file_exists($earlyBkrSynced) &&
   file_exists($earlyStorefrontCache) &&
+  @filemtime($earlyStorefrontCache) >= @filemtime(__FILE__) &&
   (time() - @filemtime($earlyStorefrontCache) < 3600)
 ) {
   http_response_code(200);
   header('Content-Type: application/json; charset=utf-8');
-  header('Cache-Control: no-cache');
+  header('Cache-Control: no-store, no-cache, must-revalidate');
   readfile($earlyStorefrontCache);
   exit;
 }
