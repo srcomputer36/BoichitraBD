@@ -232,21 +232,74 @@ export default function App() {
     loadStorefront();
   }, [loadStorefront]);
 
-  // Sync route state with browser Back/Forward navigation
+  // Sync route, product modal & category/tab state with browser Back/Forward navigation
   useEffect(() => {
-    const handlePopState = () => {
+    const handlePopState = (event: PopStateEvent) => {
       if (
         window.location.pathname.startsWith('/admin') ||
         window.location.hash === '#admin'
       ) {
         setRoute('admin');
-      } else {
-        setRoute('store');
+        return;
+      }
+      setRoute('store');
+      const params = new URLSearchParams(window.location.search);
+      const prodParam = (params.get('product') || params.get('sku') || '').trim();
+      if (!prodParam) {
+        setActiveProduct(null);
+      } else if (products.length > 0) {
+        const lower = prodParam.toLowerCase();
+        const matched = products.find(
+          (p) =>
+            p.slug.toLowerCase() === lower ||
+            p.sku.toLowerCase() === lower ||
+            String(p.id) === lower
+        );
+        if (matched) {
+          setActiveProduct(matched);
+        }
+      }
+      const st = event.state || {};
+      if (st.bbdCategory !== undefined) {
+        setSelectedCategoryId(st.bbdCategory);
+      } else if (!prodParam) {
+        setSelectedCategoryId('ALL');
+      }
+      if (st.bbdCollectionTab) {
+        setCollectionTab(st.bbdCollectionTab);
+      } else if (!prodParam) {
+        setCollectionTab('all');
       }
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
+  }, [products]);
+
+  // Close active product or modals when pressing Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (showQrLightbox) {
+          setShowQrLightbox(false);
+        } else if (activeProduct) {
+          setActiveProduct(null);
+          try {
+            if (window.location.search.includes('product=')) {
+              window.history.replaceState({}, '', window.location.pathname || '/');
+            }
+          } catch (_e) {}
+        } else if (isCartOpen) {
+          setIsCartOpen(false);
+        } else if (showTrackingModal) {
+          setShowTrackingModal(false);
+        } else if (policyModal) {
+          setPolicyModal(null);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeProduct, isCartOpen, showTrackingModal, policyModal, showQrLightbox]);
 
   // Auto-open product modal (or direct checkout) when visiting deep-link URL (?product=slug or ?product=slug&checkout=1)
   const deepLinkHandledRef = useRef<string>('');
@@ -340,6 +393,15 @@ export default function App() {
       setSelectedCategoryId(catId);
       setCollectionTab('all');
       setSearchQuery('');
+      try {
+        if (catId !== 'ALL') {
+          window.history.pushState(
+            { bbdCategory: catId, bbdCollectionTab: 'all' },
+            '',
+            window.location.pathname
+          );
+        }
+      } catch (_e) {}
       if (scrollToCatalog) {
         setTimeout(() => {
           document.getElementById('catalog')?.scrollIntoView({ behavior: 'smooth' });
@@ -348,6 +410,34 @@ export default function App() {
     },
     []
   );
+
+  const handleSelectCollectionTab = useCallback(
+    (tabId: 'all' | 'featured' | 'new' | 'bestseller' | 'offer' | 'seasonal') => {
+      setCollectionTab(tabId);
+      try {
+        if (tabId !== 'all') {
+          window.history.pushState(
+            { bbdCategory: selectedCategoryId, bbdCollectionTab: tabId },
+            '',
+            window.location.pathname
+          );
+        }
+      } catch (_e) {}
+    },
+    [selectedCategoryId]
+  );
+
+  const handleBackToAllProducts = useCallback(() => {
+    setSelectedCategoryId('ALL');
+    setCollectionTab('all');
+    setSearchQuery('');
+    setMaxPriceFilter(15000);
+    try {
+      if (window.location.search.includes('product=')) {
+        window.history.replaceState({}, '', window.location.pathname || '/');
+      }
+    } catch (_e) {}
+  }, []);
 
   // Filter & Sort Products
   const filteredProducts = useMemo(() => {
@@ -512,7 +602,12 @@ export default function App() {
     try {
       const slugOrSku = product.slug || product.sku;
       if (slugOrSku) {
-        window.history.replaceState({}, '', `/?product=${encodeURIComponent(slugOrSku)}`);
+        const nextUrl = `/?product=${encodeURIComponent(slugOrSku)}`;
+        if (window.location.search.includes('product=')) {
+          window.history.replaceState({ bbdProduct: slugOrSku }, '', nextUrl);
+        } else {
+          window.history.pushState({ bbdProduct: slugOrSku }, '', nextUrl);
+        }
       }
     } catch (_e) {}
   };
@@ -521,7 +616,11 @@ export default function App() {
     setActiveProduct(null);
     try {
       if (window.location.search.includes('product=')) {
-        window.history.replaceState({}, '', window.location.pathname || '/');
+        if (window.history.state && window.history.state.bbdProduct) {
+          window.history.back();
+        } else {
+          window.history.replaceState({}, '', window.location.pathname || '/');
+        }
       }
     } catch (_e) {}
   };
@@ -567,7 +666,22 @@ export default function App() {
   }, [products]);
 
   const [offerSlideIndex, setOfferSlideIndex] = useState(0);
+  const [isOfferSliderPaused, setIsOfferSliderPaused] = useState(false);
   const offerCarouselRef = useRef<HTMLDivElement | null>(null);
+
+  // Ensure releasing touch or mouse anywhere on screen resumes slider if held down
+  useEffect(() => {
+    if (!isOfferSliderPaused) return;
+    const resumeOnRelease = () => setIsOfferSliderPaused(false);
+    window.addEventListener('pointerup', resumeOnRelease);
+    window.addEventListener('touchend', resumeOnRelease);
+    window.addEventListener('touchcancel', resumeOnRelease);
+    return () => {
+      window.removeEventListener('pointerup', resumeOnRelease);
+      window.removeEventListener('touchend', resumeOnRelease);
+      window.removeEventListener('touchcancel', resumeOnRelease);
+    };
+  }, [isOfferSliderPaused]);
 
   useEffect(() => {
     if (offerSlideIndex >= specialOfferProducts.length && specialOfferProducts.length > 0) {
@@ -604,7 +718,7 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (specialOfferProducts.length <= 1) return;
+    if (specialOfferProducts.length <= 1 || isOfferSliderPaused) return;
     const timer = setInterval(() => {
       setOfferSlideIndex((prev) => {
         const next = (prev + 1) % specialOfferProducts.length;
@@ -613,7 +727,7 @@ export default function App() {
       });
     }, 2200);
     return () => clearInterval(timer);
-  }, [specialOfferProducts.length, scrollOfferCarouselToIndex]);
+  }, [specialOfferProducts.length, isOfferSliderPaused, scrollOfferCarouselToIndex]);
 
   const handleCopyCoupon = (code: string) => {
     setCouponInput(code);
@@ -1214,7 +1328,17 @@ export default function App() {
                   settings?.outsideSylhetDeliveryBdt === 0);
 
               return (
-                <div className="relative bg-[#14213D] text-white rounded-2xl p-5 sm:p-8 overflow-hidden">
+                <div
+                  onMouseEnter={() => setIsOfferSliderPaused(true)}
+                  onMouseLeave={() => setIsOfferSliderPaused(false)}
+                  onPointerDown={() => setIsOfferSliderPaused(true)}
+                  onPointerUp={() => setIsOfferSliderPaused(false)}
+                  onPointerCancel={() => setIsOfferSliderPaused(false)}
+                  onTouchStart={() => setIsOfferSliderPaused(true)}
+                  onTouchEnd={() => setIsOfferSliderPaused(false)}
+                  onTouchCancel={() => setIsOfferSliderPaused(false)}
+                  className="relative bg-[#14213D] text-white rounded-2xl p-5 sm:p-8 overflow-hidden select-none"
+                >
                   <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
                     {/* Left Content (7 cols) */}
                     <div className="lg:col-span-7 space-y-4 z-10">
@@ -1380,7 +1504,15 @@ export default function App() {
 
               <div
                 ref={offerCarouselRef}
-                className="flex gap-4 overflow-x-auto pb-2 snap-x snap-mandatory scroll-smooth tabular-nums"
+                onMouseEnter={() => setIsOfferSliderPaused(true)}
+                onMouseLeave={() => setIsOfferSliderPaused(false)}
+                onPointerDown={() => setIsOfferSliderPaused(true)}
+                onPointerUp={() => setIsOfferSliderPaused(false)}
+                onPointerCancel={() => setIsOfferSliderPaused(false)}
+                onTouchStart={() => setIsOfferSliderPaused(true)}
+                onTouchEnd={() => setIsOfferSliderPaused(false)}
+                onTouchCancel={() => setIsOfferSliderPaused(false)}
+                className="flex gap-4 overflow-x-auto pb-2 snap-x snap-mandatory scroll-smooth tabular-nums select-none"
               >
                 {specialOfferProducts.map((offerProd, idx) => {
                   const parsed = parseProductGalleryAndOffer(offerProd);
@@ -1599,10 +1731,61 @@ export default function App() {
 
         {/* 4. MAIN PRODUCT CATALOG SECTION */}
         <section id="catalog" className="space-y-6">
+          {/* Active Category / Collection Tab Back Bar */}
+          {(selectedCategoryId !== 'ALL' ||
+            collectionTab !== 'all' ||
+            searchQuery.trim() !== '') && (
+            <div className="bg-[#14213D] text-white rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleBackToAllProducts}
+                  className="px-3.5 py-1.5 rounded-lg bg-white text-[#14213D] hover:bg-emerald-50 text-xs font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  <span>পিছনে যান · সকল পণ্যে ফিরুন (Back)</span>
+                </button>
+                <span className="text-xs sm:text-sm font-semibold text-emerald-300">
+                  {selectedCategoryId !== 'ALL'
+                    ? `বিভাগ: ${
+                        categories.find((c) => c.id === selectedCategoryId)?.nameBn ||
+                        'নির্বাচিত বিভাগ'
+                      }`
+                    : collectionTab === 'featured'
+                    ? 'কালেকশন: ফিচার্ড পণ্য (Featured)'
+                    : collectionTab === 'new'
+                    ? 'কালেকশন: নতুন আগমন (New Arrivals)'
+                    : collectionTab === 'bestseller'
+                    ? 'কালেকশন: বেস্ট সেলার (Best Sellers)'
+                    : collectionTab === 'offer'
+                    ? 'কালেকশন: বিশেষ অফার (Special Offers)'
+                    : collectionTab === 'seasonal'
+                    ? 'কালেকশন: সিজনাল (Seasonal)'
+                    : `অনুসন্ধান: "${searchQuery}"`}
+                </span>
+              </div>
+              <span className="text-xs text-slate-300 tabular-nums">
+                পাওয়া গেছে: <strong>{filteredProducts.length}টি পণ্য</strong>
+              </span>
+            </div>
+          )}
+
           {/* Interactive Collection Filter Tabs & Sorting Bar */}
           <div className="bg-white rounded-xl border border-slate-200/80 p-4 flex flex-wrap items-center justify-between gap-4">
             {/* Functional Filter Buttons (Allowed per Zero-Pill Rule) */}
             <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-lg overflow-x-auto">
+              {(selectedCategoryId !== 'ALL' ||
+                collectionTab !== 'all' ||
+                searchQuery.trim() !== '') && (
+                <button
+                  type="button"
+                  onClick={handleBackToAllProducts}
+                  className="px-3 py-1.5 text-xs font-bold rounded-md bg-[#286F65] text-white hover:bg-[#14213D] transition-colors whitespace-nowrap shrink-0 inline-flex items-center gap-1 cursor-pointer"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                  <span>ব্যাক (সকল পণ্য)</span>
+                </button>
+              )}
               {[
                 { id: 'all', label: 'সকল পণ্য (All)' },
                 { id: 'featured', label: 'ফিচার্ড (Featured)' },
@@ -1614,8 +1797,8 @@ export default function App() {
                 <button
                   key={tab.id}
                   type="button"
-                  onClick={() => setCollectionTab(tab.id as any)}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                  onClick={() => handleSelectCollectionTab(tab.id as any)}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                     collectionTab === tab.id
                       ? 'bg-white text-[#14213D] shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
@@ -1921,7 +2104,8 @@ export default function App() {
           role="dialog"
           aria-modal="true"
           aria-label={activeProduct.nameBn}
-          className="fixed inset-0 z-50 bg-black/55 flex items-center justify-center p-4 overflow-y-auto"
+          onClick={closeProductDetail}
+          className="fixed inset-0 z-50 bg-black/55 flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
         >
           {/* Dynamic Product Schema.org Structured Data */}
           <script
@@ -1951,15 +2135,31 @@ export default function App() {
             }}
           />
 
-          <div className="bg-white rounded-2xl max-w-4xl w-full p-6 sm:p-8 shadow-2xl max-h-[92vh] overflow-y-auto relative">
-            <button
-              type="button"
-              onClick={closeProductDetail}
-              aria-label="বন্ধ করুন"
-              className="absolute top-4 right-4 p-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700"
-            >
-              <X className="w-5 h-5" />
-            </button>
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white rounded-2xl max-w-4xl w-full p-4 sm:p-8 shadow-2xl max-h-[92vh] overflow-y-auto relative"
+          >
+            {/* Sticky Top Bar with Prominent Back Button & Close Button */}
+            <div className="sticky -top-4 sm:-top-8 z-20 -mx-4 sm:-mx-8 -mt-4 sm:-mt-8 mb-5 px-4 sm:px-8 py-3 bg-white/95 backdrop-blur-xs border-b border-slate-200/80 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={closeProductDetail}
+                className="px-3.5 py-2 rounded-xl bg-[#14213D] hover:bg-[#286F65] text-white text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+              >
+                <ChevronLeft className="w-4 h-4" />
+                <span>পিছনে ফিরে যান (Back to Store)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={closeProductDetail}
+                aria-label="বন্ধ করুন"
+                className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+                <span>বন্ধ করুন</span>
+              </button>
+            </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
               {/* Left: Multi-Image & Video Product Gallery */}
@@ -2525,6 +2725,18 @@ export default function App() {
                       onClick={(e) => (e.target as HTMLInputElement).select()}
                       className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg font-mono text-[11px] text-slate-600 select-all"
                     />
+                  </div>
+
+                  {/* Bottom Back Button for convenient mobile navigation */}
+                  <div className="pt-2">
+                    <button
+                      type="button"
+                      onClick={closeProductDetail}
+                      className="w-full py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-[#14213D] font-bold text-xs sm:text-sm inline-flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                      <span>← সকল পণ্যের তালিকায় ফিরে যান (Back to Store)</span>
+                    </button>
                   </div>
                 </div>
               </div>
