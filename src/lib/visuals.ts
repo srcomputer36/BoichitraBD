@@ -282,11 +282,12 @@ export function parseProductGalleryAndOffer(product: {
             ? parsed.offer
             : null;
         if (rawOfferObj) {
+          const rawPromoCode = String(rawOfferObj.promoCouponCode || '').trim();
           offerMeta = {
             badgeText: sanitizeCustomerOfferBadge(rawOfferObj.badgeText || ''),
             offerEndsAt: rawOfferObj.offerEndsAt || '',
             dealNote: sanitizeCustomerDealNote(rawOfferObj.dealNote || ''),
-            promoCouponCode: rawOfferObj.promoCouponCode || '',
+            promoCouponCode: rawPromoCode === 'SYLHET100' ? '' : rawPromoCode,
             freeDelivery: Boolean(rawOfferObj.freeDelivery),
           };
         }

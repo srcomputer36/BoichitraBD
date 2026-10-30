@@ -666,7 +666,7 @@ export async function ensureStoreInitialized(): Promise<void> {
                   badgeText: '🔥 ফ্ল্যাশ ডিল',
                   offerEndsAt: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString(),
                   dealNote: 'সীমিত সময়ের বিশেষ ছাড় · ক্যাশ অন ডেলিভারি সুবিধা',
-                  promoCouponCode: 'SYLHET100',
+                  promoCouponCode: '',
                 }
               : {}
           );
@@ -1673,6 +1673,18 @@ export async function saveProductAdmin(
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/(^-|-$)/g, '');
       const now = new Date();
+      const cleanProdSku = payload.sku.trim().toUpperCase();
+
+      // Normalize priceBdt and salePriceBdt so edited prices always take effect
+      let normalizedPriceBdt = Math.max(1, Math.round(Number(payload.priceBdt) || 1));
+      let normalizedSalePriceBdt: number | null =
+        payload.salePriceBdt && Number(payload.salePriceBdt) > 0
+          ? Math.round(Number(payload.salePriceBdt))
+          : null;
+      if (normalizedSalePriceBdt !== null && normalizedSalePriceBdt >= normalizedPriceBdt) {
+        normalizedPriceBdt = normalizedSalePriceBdt;
+        normalizedSalePriceBdt = null;
+      }
 
       let savedProduct: typeof products.$inferSelect;
 
@@ -1702,15 +1714,15 @@ export async function saveProductAdmin(
         const updated = await tx
           .update(products)
           .set({
-            sku: payload.sku.trim().toUpperCase(),
+            sku: cleanProdSku,
             name: payload.name.trim(),
             nameBn: payload.nameBn.trim(),
             categoryId: payload.categoryId,
-            description: payload.description.trim(),
-            descriptionBn: payload.descriptionBn.trim(),
-            priceBdt: payload.priceBdt,
-            salePriceBdt: payload.salePriceBdt || null,
-            stockQuantity: payload.stockQuantity,
+            description: payload.description.trim() || payload.name.trim(),
+            descriptionBn: payload.descriptionBn.trim() || payload.nameBn.trim(),
+            priceBdt: normalizedPriceBdt,
+            salePriceBdt: normalizedSalePriceBdt,
+            stockQuantity: Math.max(0, Number(payload.stockQuantity) || 0),
             lowStockThreshold: payload.lowStockThreshold ?? 5,
             imageUrl: payload.imageUrl,
             galleryUrlsJson: nextGalleryJson,
@@ -1734,35 +1746,45 @@ export async function saveProductAdmin(
             .from(productVariants)
             .where(eq(productVariants.productId, savedProduct.id));
           const keptIds = new Set<number>();
+          const usedSkusInLoop = new Set<string>();
 
-          for (const v of payload.variants) {
-            const cleanSku = v.sku.trim().toUpperCase();
+          for (let vIdx = 0; vIdx < payload.variants.length; vIdx++) {
+            const v = payload.variants[vIdx];
+            let cleanSku = (v.sku || '').trim().toUpperCase() || `${cleanProdSku}-V${vIdx + 1}`;
+            if (usedSkusInLoop.has(cleanSku)) {
+              cleanSku = `${cleanProdSku}-V${vIdx + 1}-${Date.now().toString().slice(-3)}`;
+            }
+            usedSkusInLoop.add(cleanSku);
+
             const matchedExisting = existingProductVars.find(
-              (ev) => (v.id && ev.id === v.id) || ev.sku.toUpperCase() === cleanSku
+              (ev) =>
+                !keptIds.has(ev.id) &&
+                ((v.id && ev.id === Number(v.id)) || ev.sku.toUpperCase() === cleanSku)
             );
             if (matchedExisting) {
               keptIds.add(matchedExisting.id);
               await tx
                 .update(productVariants)
                 .set({
-                  sku: cleanSku,
-                  size: v.size.trim(),
-                  color: v.color.trim(),
-                  priceAdjustmentBdt: v.priceAdjustmentBdt || 0,
-                  stockQuantity: Math.max(0, v.stockQuantity || 0),
+                  sku: matchedExisting.sku || cleanSku,
+                  size: (v.size || '').trim(),
+                  color: (v.color || '').trim(),
+                  priceAdjustmentBdt: Number(v.priceAdjustmentBdt) || 0,
+                  stockQuantity: Math.max(0, Number(v.stockQuantity) || 0),
                   isActive: true,
                 })
                 .where(eq(productVariants.id, matchedExisting.id));
             } else {
+              const uniqueVarSku = `${cleanProdSku}-V${vIdx + 1}-${Math.floor(100 + Math.random() * 900)}`;
               const insertedVar = await tx
                 .insert(productVariants)
                 .values({
                   productId: savedProduct.id,
-                  sku: cleanSku,
-                  size: v.size.trim(),
-                  color: v.color.trim(),
-                  priceAdjustmentBdt: v.priceAdjustmentBdt || 0,
-                  stockQuantity: Math.max(0, v.stockQuantity || 0),
+                  sku: uniqueVarSku,
+                  size: (v.size || '').trim(),
+                  color: (v.color || '').trim(),
+                  priceAdjustmentBdt: Number(v.priceAdjustmentBdt) || 0,
+                  stockQuantity: Math.max(0, Number(v.stockQuantity) || 0),
                   isActive: true,
                 })
                 .returning();
@@ -1786,23 +1808,23 @@ export async function saveProductAdmin(
           action: 'UPDATE_PRODUCT',
           entityType: 'Product',
           entityId: savedProduct.sku,
-          details: `Updated product "${savedProduct.name}" (Price: ৳${savedProduct.priceBdt}, Stock: ${savedProduct.stockQuantity})`,
+          details: `Updated product "${savedProduct.name}" (Price: ৳${savedProduct.priceBdt}, Sale: ${savedProduct.salePriceBdt ?? 'N/A'}, Stock: ${savedProduct.stockQuantity})`,
         });
       } else {
         const uniqueSlug = `${slugBase}-${Date.now().toString().slice(-4)}`;
         const inserted = await tx
           .insert(products)
           .values({
-            sku: payload.sku.trim().toUpperCase(),
+            sku: cleanProdSku,
             name: payload.name.trim(),
             nameBn: payload.nameBn.trim(),
             slug: uniqueSlug,
             categoryId: payload.categoryId,
-            description: payload.description.trim(),
-            descriptionBn: payload.descriptionBn.trim(),
-            priceBdt: payload.priceBdt,
-            salePriceBdt: payload.salePriceBdt || null,
-            stockQuantity: payload.stockQuantity,
+            description: payload.description.trim() || payload.name.trim(),
+            descriptionBn: payload.descriptionBn.trim() || payload.nameBn.trim(),
+            priceBdt: normalizedPriceBdt,
+            salePriceBdt: normalizedSalePriceBdt,
+            stockQuantity: Math.max(0, Number(payload.stockQuantity) || 0),
             lowStockThreshold: payload.lowStockThreshold ?? 5,
             imageUrl: payload.imageUrl || createStudioProductSvg('hoodie', '#14213D', '#286F65', payload.sku),
             galleryUrlsJson: payload.galleryUrlsJson ?? '[]',
@@ -1819,14 +1841,16 @@ export async function saveProductAdmin(
         savedProduct = inserted[0];
 
         if (payload.variants && payload.variants.length > 0) {
-          for (const v of payload.variants) {
+          for (let vIdx = 0; vIdx < payload.variants.length; vIdx++) {
+            const v = payload.variants[vIdx];
+            const uniqueVarSku = `${cleanProdSku}-V${vIdx + 1}-${Math.floor(100 + Math.random() * 900)}`;
             await tx.insert(productVariants).values({
               productId: savedProduct.id,
-              sku: v.sku.trim().toUpperCase(),
-              size: v.size.trim(),
-              color: v.color.trim(),
-              priceAdjustmentBdt: v.priceAdjustmentBdt || 0,
-              stockQuantity: v.stockQuantity || 0,
+              sku: uniqueVarSku,
+              size: (v.size || '').trim(),
+              color: (v.color || '').trim(),
+              priceAdjustmentBdt: Number(v.priceAdjustmentBdt) || 0,
+              stockQuantity: Math.max(0, Number(v.stockQuantity) || 0),
               isActive: true,
             });
           }
@@ -1842,6 +1866,7 @@ export async function saveProductAdmin(
         });
       }
 
+      invalidateStorefrontCache();
       return savedProduct;
     });
   } catch (error: any) {

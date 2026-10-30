@@ -79,8 +79,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   onBackToStore,
   onStoreUpdated,
 }) => {
-  // Site-Native Admin Session State (in memory + HttpOnly cookie on server)
-  const [sessionToken, setSessionToken] = useState<string>('');
+  // Site-Native Admin Session State (in memory + localStorage + HttpOnly cookie on server)
+  const [sessionToken, setSessionToken] = useState<string>(() => {
+    try {
+      return localStorage.getItem('bbd_admin_session_token_v1') || '';
+    } catch {
+      return '';
+    }
+  });
   const [adminUser, setAdminUser] = useState<AdminUserInfo | null>(null);
   const [isSetupComplete, setIsSetupComplete] = useState<boolean>(true);
   const [authLoading, setAuthLoading] = useState(true);
@@ -211,7 +217,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     offerBadgeText: '🔥 ফ্ল্যাশ ডিল',
     offerEndsAt: '',
     offerDealNote: 'সীমিত সময়ের বিশেষ ছাড় · ক্যাশ অন ডেলিভারি সুবিধা',
-    offerPromoCoupon: 'SYLHET100',
+    offerPromoCoupon: '',
     freeDelivery: false,
     variants: [],
   });
@@ -318,6 +324,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         const res = await fetch('/api/admin/overview', {
           headers,
           credentials: 'include',
+          cache: 'no-store',
         });
         const data = await res.json();
         if (!res.ok) {
@@ -398,8 +405,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     (async () => {
       setAuthLoading(true);
       try {
+        let savedToken = '';
+        try {
+          savedToken = localStorage.getItem('bbd_admin_session_token_v1') || '';
+        } catch {
+          // ignore
+        }
+        const statusHeaders: Record<string, string> = {};
+        if (savedToken) {
+          statusHeaders['Authorization'] = `Bearer ${savedToken}`;
+        }
         const res = await fetch('/api/admin/auth/status', {
+          headers: statusHeaders,
           credentials: 'include',
+          cache: 'no-store',
         });
         const data = await res.json();
         setIsSetupComplete(Boolean(data.isSetupComplete));
@@ -407,7 +426,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           setAdminUser(data.adminUser);
           setNewAdminEmail(data.adminUser.email || '');
           setNewAdminName(data.adminUser.name || '');
-          await fetchAdminOverview();
+          await fetchAdminOverview(savedToken || undefined);
         }
       } catch {
         // Ignore initial check error
@@ -446,10 +465,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       if (!res.ok) {
         throw new Error(data.error || 'অ্যাডমিন অ্যাকাউন্ট তৈরি করা যায়নি।');
       }
-      setSessionToken(data.token || '');
+      const nextToken = data.token || '';
+      setSessionToken(nextToken);
+      try {
+        if (nextToken) localStorage.setItem('bbd_admin_session_token_v1', nextToken);
+      } catch {
+        // ignore
+      }
       setAdminUser(data.adminUser);
       setIsSetupComplete(true);
-      await fetchAdminOverview(data.token);
+      await fetchAdminOverview(nextToken);
     } catch (err: any) {
       setAuthError(err.message);
     } finally {
@@ -475,10 +500,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       if (!res.ok) {
         throw new Error(data.error || 'লগইন ব্যর্থ হয়েছে।');
       }
-      setSessionToken(data.token || '');
+      const nextToken = data.token || '';
+      setSessionToken(nextToken);
+      try {
+        if (nextToken) localStorage.setItem('bbd_admin_session_token_v1', nextToken);
+      } catch {
+        // ignore
+      }
       setAdminUser(data.adminUser);
       setLoginPassword('');
-      await fetchAdminOverview(data.token);
+      await fetchAdminOverview(nextToken);
     } catch (err: any) {
       setAuthError(err.message);
     } finally {
@@ -497,6 +528,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       // ignore
     }
     setSessionToken('');
+    try {
+      localStorage.removeItem('bbd_admin_session_token_v1');
+    } catch {
+      // ignore
+    }
     setAdminUser(null);
     setStats(null);
     setOrders([]);
@@ -755,7 +791,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       offerBadgeText: '🔥 ফ্ল্যাশ ডিল',
       offerEndsAt: defaultEnds,
       offerDealNote: 'সীমিত সময়ের বিশেষ ছাড় · ক্যাশ অন ডেলিভারি সুবিধা',
-      offerPromoCoupon: 'SYLHET100',
+      offerPromoCoupon: '',
       freeDelivery: false,
       variants: [],
     });
@@ -775,8 +811,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       name: prod.name,
       nameBn: prod.nameBn,
       categoryId: prod.categoryId,
-      description: prod.description,
-      descriptionBn: prod.descriptionBn,
+      description: prod.description || prod.name,
+      descriptionBn: prod.descriptionBn || prod.nameBn,
       priceBdt: prod.priceBdt,
       salePriceBdt: prod.salePriceBdt ? String(prod.salePriceBdt) : '',
       stockQuantity: prod.stockQuantity,
@@ -798,7 +834,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         : defaultEnds,
       offerDealNote:
         parsed.offerMeta.dealNote || 'সীমিত সময়ের বিশেষ ছাড় · ক্যাশ অন ডেলিভারি সুবিধা',
-      offerPromoCoupon: parsed.offerMeta.promoCouponCode || 'SYLHET100',
+      offerPromoCoupon: parsed.offerMeta.promoCouponCode || '',
       freeDelivery: Boolean(parsed.offerMeta.freeDelivery),
       variants: (prod.variants || []).map((v) => ({
         id: v.id,
@@ -968,15 +1004,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     setSavingProduct(true);
+    setFeedbackBanner(null);
     try {
+      const cleanCoupon = (productForm.offerPromoCoupon || '').trim().toUpperCase();
       const serializedGallery = serializeProductGalleryAndOffer(
         productForm.galleryMedia,
         {
           badgeText: productForm.offerBadgeText,
           offerEndsAt: productForm.offerEndsAt,
           dealNote: productForm.offerDealNote,
-          promoCouponCode: productForm.offerPromoCoupon,
-          freeDelivery: productForm.freeDelivery,
+          promoCouponCode: cleanCoupon,
+          freeDelivery: Boolean(productForm.freeDelivery),
         }
       );
 
@@ -993,14 +1031,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           stockQuantity: Math.max(0, Number(v.stockQuantity) || 0),
         }));
 
-      const totalVariantStock = cleanedVariants.reduce(
-        (sum, v) => sum + v.stockQuantity,
-        0
-      );
-      const effectiveTotalStock =
-        cleanedVariants.length > 0
-          ? Math.max(Number(productForm.stockQuantity) || 0, totalVariantStock)
-          : Number(productForm.stockQuantity) || 0;
+      const enteredStock = Math.max(0, Number(productForm.stockQuantity) || 0);
+      const rawPrice = Math.max(1, Number(productForm.priceBdt) || 1);
+      const rawSale =
+        productForm.salePriceBdt && Number(productForm.salePriceBdt) > 0
+          ? Number(productForm.salePriceBdt)
+          : null;
+
+      let finalPriceBdt = rawPrice;
+      let finalSalePriceBdt = rawSale;
+      if (finalSalePriceBdt !== null && finalSalePriceBdt >= finalPriceBdt) {
+        finalPriceBdt = finalSalePriceBdt;
+        finalSalePriceBdt = null;
+      }
 
       const res = await fetch('/api/admin/products', {
         method: 'POST',
@@ -1008,20 +1051,34 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         credentials: 'include',
         body: JSON.stringify({
           ...productForm,
-          priceBdt: Number(productForm.priceBdt),
-          salePriceBdt: productForm.salePriceBdt ? Number(productForm.salePriceBdt) : null,
-          stockQuantity: effectiveTotalStock,
-          lowStockThreshold: Number(productForm.lowStockThreshold),
+          name: (productForm.name || productForm.nameBn).trim(),
+          nameBn: (productForm.nameBn || productForm.name).trim(),
+          description: (productForm.description || productForm.name || productForm.nameBn).trim(),
+          descriptionBn: (productForm.descriptionBn || productForm.nameBn || productForm.name).trim(),
+          priceBdt: finalPriceBdt,
+          salePriceBdt: finalSalePriceBdt,
+          stockQuantity: enteredStock,
+          lowStockThreshold: Math.max(1, Number(productForm.lowStockThreshold) || 5),
           galleryUrlsJson: serializedGallery,
           variants: cleanedVariants,
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      if (!res.ok) throw new Error(data.error || 'পণ্য সংরক্ষণ করা যায়নি।');
+
+      if (data.product) {
+        setProducts((prev) => {
+          const exists = prev.some((item) => item.id === data.product.id);
+          if (exists) {
+            return prev.map((item) => (item.id === data.product.id ? data.product : item));
+          }
+          return [data.product, ...prev];
+        });
+      }
 
       setFeedbackBanner({
         type: 'success',
-        text: `পণ্য "${productForm.nameBn}" (কালার/সাইজ ভ্যারিয়েন্ট, ছবি/ভিডিও ও অফারসহ) সফলভাবে সংরক্ষিত হয়েছে।`,
+        text: `✓ পণ্য "${productForm.nameBn || productForm.name}" সফলভাবে সংরক্ষিত ও স্টোরে আপডেট হয়েছে!`,
       });
       setShowProductModal(false);
       await fetchAdminOverview();
@@ -1033,6 +1090,84 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       });
     } finally {
       setSavingProduct(false);
+    }
+  };
+
+  const handleQuickFreeDeliveryMode = async (
+    insideDhakaBdt: number,
+    outsideDhakaBdt: number,
+    modeLabel: string
+  ) => {
+    if (!settings) return;
+    const updatedSettings: StoreSettings = {
+      ...settings,
+      sylhetDeliveryBdt: insideDhakaBdt,
+      outsideSylhetDeliveryBdt: outsideDhakaBdt,
+    };
+    setSettings(updatedSettings);
+    try {
+      const res = await fetch('/api/admin/settings', {
+        method: 'PUT',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'include',
+        body: JSON.stringify(updatedSettings),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'ডেলিভারি সেটিংস সংরক্ষণ করা যায়নি।');
+      setFeedbackBanner({
+        type: 'success',
+        text: `🚚 ${modeLabel} সফলভাবে চালু ও সংরক্ষিত হয়েছে!`,
+      });
+      await fetchAdminOverview();
+      onStoreUpdated();
+    } catch (err: any) {
+      setFeedbackBanner({
+        type: 'error',
+        text: err.message || 'ডেলিভারি সেটিংস আপডেট করা যায়নি।',
+      });
+    }
+  };
+
+  const handleQuickProductFreeDeliveryToggle = async (prod: Product) => {
+    const parsed = parseProductGalleryAndOffer(prod);
+    const nextFreeDelivery = !parsed.offerMeta.freeDelivery;
+    const serializedGallery = serializeProductGalleryAndOffer(parsed.media, {
+      ...parsed.offerMeta,
+      promoCouponCode: parsed.offerMeta.promoCouponCode || '',
+      freeDelivery: nextFreeDelivery,
+    });
+
+    try {
+      const res = await fetch('/api/admin/products', {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        credentials: 'include',
+        body: JSON.stringify({
+          ...prod,
+          galleryUrlsJson: serializedGallery,
+          variants: prod.variants || [],
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'ফ্রি ডেলিভারি আপডেট করা যায়নি।');
+      if (data.product) {
+        setProducts((prev) =>
+          prev.map((item) => (item.id === data.product.id ? data.product : item))
+        );
+      }
+      setFeedbackBanner({
+        type: 'success',
+        text: nextFreeDelivery
+          ? `🚚 "${prod.nameBn}" পণ্যে ফ্রি ডেলিভারি (৳০) চালু করা হয়েছে!`
+          : `"${prod.nameBn}" পণ্যে ফ্রি ডেলিভারি বন্ধ করে রেগুলার চার্জ চালু করা হয়েছে।`,
+      });
+      await fetchAdminOverview();
+      onStoreUpdated();
+    } catch (err: any) {
+      setFeedbackBanner({
+        type: 'error',
+        text: err.message || 'ফ্রি ডেলিভারি আপডেট ব্যর্থ হয়েছে।',
+      });
     }
   };
 
@@ -1717,6 +1852,93 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             >
               বন্ধ করুন
             </button>
+          </div>
+        )}
+
+        {/* GLOBAL FREE DELIVERY 1-CLICK CONTROL BAR (Visible across all Admin Tabs) */}
+        {settings && (
+          <div className="mb-6 bg-emerald-50/90 border border-[#286F65]/30 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3 shadow-xs">
+            <div className="space-y-0.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm font-bold text-[#14213D]">
+                  🚚 ডেলিভারি চার্জ ও ফ্রি ডেলিভারি কন্ট্রোল (১-ক্লিকে চালু/বন্ধ করুন)
+                </span>
+                {settings.sylhetDeliveryBdt === 0 &&
+                settings.outsideSylhetDeliveryBdt === 0 ? (
+                  <span className="px-2.5 py-0.5 rounded-md bg-[#16A34A] text-white text-[11px] font-bold">
+                    ✓ সারা বাংলাদেশে ফ্রি ডেলিভারি (৳০) চালু আছে
+                  </span>
+                ) : settings.sylhetDeliveryBdt === 0 ? (
+                  <span className="px-2.5 py-0.5 rounded-md bg-amber-600 text-white text-[11px] font-bold">
+                    ✓ ঢাকার ভিতরে ফ্রি ডেলিভারি (৳০) · বাইরে ৳{settings.outsideSylhetDeliveryBdt}
+                  </span>
+                ) : (
+                  <span className="px-2.5 py-0.5 rounded-md bg-slate-200 text-slate-800 text-[11px] font-semibold">
+                    বর্তমান চার্জ: ঢাকা ৳{settings.sylhetDeliveryBdt} · ঢাকার বাইরে ৳{settings.outsideSylhetDeliveryBdt}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-600">
+                নিচের বাটনে ক্লিক করলেই সাথে সাথে ডেলিভারি চার্জ আপডেট হয়ে যাবে। এছাড়া নির্দিষ্ট পণ্যে ফ্রি ডেলিভারি দিতে পণ্য তালিকায় বা পণ্য এডিট বক্সে <strong>&ldquo;🚚 ফ্রি ডেলিভারি&rdquo;</strong> বাটনে ক্লিক করুন।
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  handleQuickFreeDeliveryMode(0, 0, 'সকল অর্ডারে সম্পূর্ণ ফ্রি ডেলিভারি (৳০)')
+                }
+                className={`px-3.5 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  settings.sylhetDeliveryBdt === 0 &&
+                  settings.outsideSylhetDeliveryBdt === 0
+                    ? 'bg-[#16A34A] text-white shadow-xs'
+                    : 'bg-white text-[#006A4E] border border-[#286F65]/40 hover:bg-[#286F65] hover:text-white'
+                }`}
+              >
+                ✓ সব অর্ডারে ফ্রি ডেলিভারি (৳০)
+              </button>
+
+              <button
+                type="button"
+                onClick={() =>
+                  handleQuickFreeDeliveryMode(
+                    0,
+                    settings.outsideSylhetDeliveryBdt > 0
+                      ? settings.outsideSylhetDeliveryBdt
+                      : 130,
+                    'ঢাকার ভিতরে ফ্রি ডেলিভারি (৳০)'
+                  )
+                }
+                className={`px-3.5 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  settings.sylhetDeliveryBdt === 0 &&
+                  settings.outsideSylhetDeliveryBdt > 0
+                    ? 'bg-[#14213D] text-white shadow-xs'
+                    : 'bg-white text-[#14213D] border border-slate-300 hover:bg-slate-100'
+                }`}
+              >
+                শুধু ঢাকায় ফ্রি (৳০)
+              </button>
+
+              <button
+                type="button"
+                onClick={() =>
+                  handleQuickFreeDeliveryMode(
+                    70,
+                    130,
+                    'রেগুলার ডেলিভারি চার্জ (ঢাকা ৳৭০ / বাইরে ৳১৩০)'
+                  )
+                }
+                className={`px-3.5 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  settings.sylhetDeliveryBdt > 0 &&
+                  settings.outsideSylhetDeliveryBdt > 0
+                    ? 'bg-[#14213D] text-white'
+                    : 'bg-white text-slate-700 border border-slate-300 hover:bg-slate-100'
+                }`}
+              >
+                রেগুলার চার্জ (৳৭০ / ৳১৩০)
+              </button>
+            </div>
           </div>
         )}
 
@@ -2445,9 +2667,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         <td className="py-3 pr-3 font-mono">{p.sku}</td>
                         <td className="py-3 pr-3">
                           <span className="font-bold text-[#14213D]">
-                            {formatBdt(p.salePriceBdt || p.priceBdt)}
+                            {formatBdt(
+                              p.salePriceBdt && p.salePriceBdt < p.priceBdt
+                                ? p.salePriceBdt
+                                : p.priceBdt
+                            )}
                           </span>
-                          {p.salePriceBdt && (
+                          {p.salePriceBdt && p.salePriceBdt < p.priceBdt && (
                             <span className="text-slate-400 line-through ml-1.5">
                               {formatBdt(p.priceBdt)}
                             </span>
@@ -2457,6 +2683,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               {parsedMedia.offerMeta.badgeText || '🔥 বিশেষ অফার'}
                             </div>
                           )}
+                          <div className="mt-1">
+                            <button
+                              type="button"
+                              onClick={() => handleQuickProductFreeDeliveryToggle(p)}
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold border transition cursor-pointer ${
+                                parsedMedia.offerMeta.freeDelivery
+                                  ? 'bg-[#16A34A] text-white border-[#16A34A]'
+                                  : 'bg-slate-100 text-slate-600 border-slate-300 hover:border-[#286F65] hover:text-[#006A4E]'
+                              }`}
+                            >
+                              {parsedMedia.offerMeta.freeDelivery
+                                ? '🚚 ফ্রি ডেলিভারি চালু ✓'
+                                : '+ 🚚 ফ্রি ডেলিভারি দিন'}
+                            </button>
+                          </div>
                         </td>
                         <td className="py-3 pr-3">
                           <span
@@ -3102,11 +3343,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       <button
                         type="button"
                         onClick={() =>
-                          setSettings({
-                            ...settings,
-                            sylhetDeliveryBdt: 0,
-                            outsideSylhetDeliveryBdt: 0,
-                          })
+                          handleQuickFreeDeliveryMode(
+                            0,
+                            0,
+                            'সকল অর্ডারে সম্পূর্ণ ফ্রি ডেলিভারি (৳০)'
+                          )
                         }
                         className={`px-3 py-1.5 rounded-lg font-bold text-[11px] transition cursor-pointer ${
                           settings.sylhetDeliveryBdt === 0 &&
@@ -3120,14 +3361,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       <button
                         type="button"
                         onClick={() =>
-                          setSettings({
-                            ...settings,
-                            sylhetDeliveryBdt: 0,
-                            outsideSylhetDeliveryBdt:
-                              settings.outsideSylhetDeliveryBdt > 0
-                                ? settings.outsideSylhetDeliveryBdt
-                                : 130,
-                          })
+                          handleQuickFreeDeliveryMode(
+                            0,
+                            settings.outsideSylhetDeliveryBdt > 0
+                              ? settings.outsideSylhetDeliveryBdt
+                              : 130,
+                            'ঢাকার ভিতরে ফ্রি ডেলিভারি (৳০)'
+                          )
                         }
                         className={`px-3 py-1.5 rounded-lg font-bold text-[11px] transition cursor-pointer ${
                           settings.sylhetDeliveryBdt === 0 &&
@@ -3141,11 +3381,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       <button
                         type="button"
                         onClick={() =>
-                          setSettings({
-                            ...settings,
-                            sylhetDeliveryBdt: 70,
-                            outsideSylhetDeliveryBdt: 130,
-                          })
+                          handleQuickFreeDeliveryMode(
+                            70,
+                            130,
+                            'রেগুলার ডেলিভারি চার্জ (ঢাকা ৳৭০ / বাইরে ৳১৩০)'
+                          )
                         }
                         className="px-3 py-1.5 rounded-lg font-semibold text-[11px] bg-white text-slate-700 border border-slate-300 hover:bg-slate-100 transition cursor-pointer"
                       >
@@ -4192,7 +4432,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 tabular-nums">
                 <div>
                   <label className="block font-semibold text-slate-700 mb-1">
-                    রেগুলার মূল্য (BDT ৳) *
+                    রেগুলার / বিক্রয় মূল্য (BDT ৳) *
                   </label>
                   <input
                     type="number"
@@ -4209,8 +4449,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    ডিসকাউন্ট / সেল মূল্য (ঐচ্ছিক ৳)
+                  <label className="block font-semibold text-slate-700 mb-1 flex items-center justify-between">
+                    <span>ডিসকাউন্ট / অফার মূল্য (ঐচ্ছিক ৳)</span>
+                    {productForm.salePriceBdt && (
+                      <button
+                        type="button"
+                        onClick={() => setProductForm({ ...productForm, salePriceBdt: '' })}
+                        className="text-[10px] text-red-600 hover:underline font-semibold"
+                      >
+                        ডিসকাউন্ট মুছুন
+                      </button>
+                    )}
                   </label>
                   <input
                     type="number"
@@ -4245,6 +4494,40 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     ))}
                   </div>
                 </div>
+              </div>
+
+              {/* PROMINENT TOP FREE DELIVERY TOGGLE INSIDE PRODUCT MODAL */}
+              <div className="p-3.5 rounded-xl bg-emerald-50 border border-[#286F65]/40 flex flex-wrap items-center justify-between gap-3">
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={productForm.freeDelivery}
+                    onChange={(e) =>
+                      setProductForm({
+                        ...productForm,
+                        freeDelivery: e.target.checked,
+                      })
+                    }
+                    className="w-4 h-4 accent-[#16A34A] rounded cursor-pointer"
+                  />
+                  <div>
+                    <div className="font-bold text-[#14213D] text-xs">
+                      🚚 এই পণ্যে ফ্রি ডেলিভারি সুবিধা চালু করুন (Free Delivery = ৳০)
+                    </div>
+                    <div className="text-[11px] text-slate-600">
+                      এটি টিক দিলে কাস্টমার এই পণ্যটি অর্ডার করার সময় ডেলিভারি চার্জ সম্পূর্ণ ফ্রি (৳০) পাবে।
+                    </div>
+                  </div>
+                </label>
+                <span
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-bold ${
+                    productForm.freeDelivery
+                      ? 'bg-[#16A34A] text-white'
+                      : 'bg-white text-slate-600 border border-slate-300'
+                  }`}
+                >
+                  {productForm.freeDelivery ? '✓ ফ্রি ডেলিভারি চালু' : 'রেগুলার ডেলিভারি চার্জ'}
+                </span>
               </div>
 
               {/* Primary Image Upload / Studio Generator */}
@@ -4775,11 +5058,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">
-                  পণ্যের বিবরণ (বাংলা) *
+                  পণ্যের বিবরণ (বাংলা)
                 </label>
                 <textarea
                   rows={2}
-                  required
                   value={productForm.descriptionBn}
                   onChange={(e) =>
                     setProductForm({ ...productForm, descriptionBn: e.target.value })
@@ -4790,11 +5072,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">
-                  Product Description (English) *
+                  Product Description (English)
                 </label>
                 <textarea
                   rows={2}
-                  required
                   value={productForm.description}
                   onChange={(e) =>
                     setProductForm({ ...productForm, description: e.target.value })
@@ -4960,8 +5241,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     </div>
 
                     <div>
-                      <label className="block font-semibold text-slate-700 mb-1">
-                        হাইলাইটকৃত প্রমো কুপন কোড (ঐচ্ছিক)
+                      <label className="block font-semibold text-slate-700 mb-1 flex items-center justify-between">
+                        <span>হাইলাইটকৃত প্রমো কুপন কোড (ঐচ্ছিক - না থাকলে ফাঁকা রাখুন)</span>
+                        {productForm.offerPromoCoupon && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setProductForm({ ...productForm, offerPromoCoupon: '' })
+                            }
+                            className="text-[10px] text-red-600 hover:underline font-semibold"
+                          >
+                            কুপন মুছুন
+                          </button>
+                        )}
                       </label>
                       <input
                         type="text"
@@ -4972,7 +5264,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             offerPromoCoupon: e.target.value.toUpperCase(),
                           })
                         }
-                        placeholder="যেমন: SYLHET100 বা BOICHITRA10"
+                        placeholder="কুপন না দিতে চাইলে ফাঁকা রাখুন"
                         className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white font-mono uppercase"
                       />
                     </div>
@@ -4980,7 +5272,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
               )}
 
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-200">
+              <div className="sticky bottom-0 bg-white flex flex-wrap items-center justify-between gap-2 pt-3 pb-1 border-t border-slate-200 z-10">
                 <div>
                   {productForm.id && (
                     <button
@@ -5015,9 +5307,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <button
                     type="submit"
                     disabled={savingProduct}
-                    className="px-5 py-2 bg-[#14213D] hover:bg-[#286F65] text-white font-semibold rounded-lg"
+                    className="px-5 py-2 bg-[#14213D] hover:bg-[#286F65] text-white font-semibold rounded-lg cursor-pointer"
                   >
-                    {savingProduct ? 'সংরক্ষণ হচ্ছে...' : 'পণ্য সংরক্ষণ করুন'}
+                    {savingProduct ? 'সংরক্ষণ হচ্ছে...' : '✓ পরিবর্তন সংরক্ষণ করুন (Save)'}
                   </button>
                 </div>
               </div>

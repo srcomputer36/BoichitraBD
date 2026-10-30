@@ -198,7 +198,7 @@ export default function App() {
         data = await prefetched;
       }
       if (!data || !Array.isArray(data.products)) {
-        const res = await fetch('/api/storefront');
+        const res = await fetch('/api/storefront', { cache: 'no-store' });
         data = await res.json();
         if (!res.ok) {
           throw new Error(data.error || 'স্টোরের তথ্য লোড করতে সমস্যা হয়েছে।');
@@ -267,6 +267,18 @@ export default function App() {
       if (matched) {
         deepLinkHandledRef.current = sig;
         const defaultVar = matched.variants.length > 0 ? matched.variants[0] : null;
+        const basePrice =
+          matched.salePriceBdt && matched.salePriceBdt < matched.priceBdt
+            ? matched.salePriceBdt
+            : matched.priceBdt;
+        const unitVal = basePrice + (defaultVar ? defaultVar.priceAdjustmentBdt : 0);
+        trackMetaPixelEvent('ViewContent', {
+          content_ids: [matched.sku || String(matched.id)],
+          content_name: matched.nameBn || matched.name,
+          content_type: 'product',
+          value: unitVal,
+          currency: 'BDT',
+        });
         if (isDirectCheckout) {
           const key = `${matched.id}-${defaultVar ? defaultVar.id : 'std'}`;
           setCart((prev) =>
@@ -274,6 +286,12 @@ export default function App() {
               ? prev
               : [...prev, { key, product: matched, variant: defaultVar, quantity: 1 }]
           );
+          trackMetaPixelEvent('InitiateCheckout', {
+            content_ids: [matched.sku || String(matched.id)],
+            num_items: 1,
+            value: unitVal,
+            currency: 'BDT',
+          });
           setCheckoutStep('checkout');
           setIsCartOpen(true);
           try {
@@ -2557,7 +2575,7 @@ export default function App() {
                             type="text"
                             value={couponInput}
                             onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
-                            placeholder="যেমন: SYLHET100"
+                            placeholder="কুপন কোড লিখুন"
                             className="flex-1 px-3 py-2 text-xs bg-white border border-slate-300 rounded-lg font-mono uppercase"
                           />
                           <button
@@ -2611,6 +2629,14 @@ export default function App() {
                           <button
                             type="button"
                             onClick={() => {
+                              trackMetaPixelEvent('InitiateCheckout', {
+                                content_ids: cart.map(
+                                  (item) => item.product.sku || String(item.product.id)
+                                ),
+                                num_items: cartItemCount,
+                                value: Math.max(0, finalTotalBdt - potentialQrDiscountBdt),
+                                currency: 'BDT',
+                              });
                               setPaymentMethod('BANGLA_QR');
                               setCheckoutStep('checkout');
                             }}

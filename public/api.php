@@ -719,8 +719,8 @@ function formatProductRow(array $r, array $variants = [], array $catMap = []): a
   $cleanDescBn = sanitizeCustomerText((string)$r['description_bn']) ?: $r['description_bn'];
   $rawGallery = (string)($r['gallery_urls_json'] ?: '[]');
   $rawGallery = str_replace(
-    ['BusinessKoro বেস্টসেলার', 'রিসেলার হিট কালেকশন', 'BusinessKoro ডিল'],
-    ['বেস্টসেলার কালেকশন', 'প্রিমিয়াম কালেকশন', 'বিশেষ অফার'],
+    ['BusinessKoro বেস্টসেলার', 'রিসেলার হিট কালেকশন', 'BusinessKoro ডিল', '"promoCouponCode":"SYLHET100"'],
+    ['বেস্টসেলার কালেকশন', 'প্রিমিয়াম কালেকশন', 'বিশেষ অফার', '"promoCouponCode":""'],
     $rawGallery
   );
 
@@ -1759,13 +1759,17 @@ if ($requestUri === '/api/admin/products' && $method === 'POST') {
   $nameBn = trim((string)($body['nameBn'] ?? ''));
   $categoryId = (int)($body['categoryId'] ?? 1);
   $priceBdt = max(1, (int)($body['priceBdt'] ?? 0));
-  $salePriceBdt = !empty($body['salePriceBdt']) ? (int)$body['salePriceBdt'] : null;
+  $salePriceBdt = (!empty($body['salePriceBdt']) && (int)$body['salePriceBdt'] > 0) ? (int)$body['salePriceBdt'] : null;
+  if ($salePriceBdt !== null && $salePriceBdt >= $priceBdt) {
+    $priceBdt = $salePriceBdt;
+    $salePriceBdt = null;
+  }
   $stockQuantity = max(0, (int)($body['stockQuantity'] ?? 0));
   $lowStockThreshold = (int)($body['lowStockThreshold'] ?? 5);
   $imageUrl = (string)($body['imageUrl'] ?? '');
   $galleryUrlsJson = is_string($body['galleryUrlsJson'] ?? null) ? $body['galleryUrlsJson'] : '[]';
-  $description = trim((string)($body['description'] ?? $name));
-  $descriptionBn = trim((string)($body['descriptionBn'] ?? $nameBn));
+  $description = trim((string)($body['description'] ?? '')) ?: $name;
+  $descriptionBn = trim((string)($body['descriptionBn'] ?? '')) ?: $nameBn;
   $isFeatured = !empty($body['isFeatured']) ? 1 : 0;
   $isNewArrival = !empty($body['isNewArrival']) ? 1 : 0;
   $isBestSeller = !empty($body['isBestSeller']) ? 1 : 0;
@@ -1823,6 +1827,7 @@ if ($requestUri === '/api/admin/products' && $method === 'POST') {
 
       $matchedRow = null;
       foreach ($existingVars as $ev) {
+        if (in_array((int)$ev['id'], $keptIds, true)) continue;
         if (($vId && (int)$ev['id'] === $vId) || strtoupper($ev['sku']) === $vSku) {
           $matchedRow = $ev;
           break;
@@ -1832,10 +1837,11 @@ if ($requestUri === '/api/admin/products' && $method === 'POST') {
       if ($matchedRow) {
         $keptIds[] = (int)$matchedRow['id'];
         $pdo->prepare("UPDATE product_variants SET sku = ?, size = ?, color = ?, price_adjustment_bdt = ?, stock_quantity = ?, is_active = 1 WHERE id = ?")
-            ->execute([$vSku, $vSize, $vColor, $vAdj, $vStock, (int)$matchedRow['id']]);
+            ->execute([$matchedRow['sku'] ?: $vSku, $vSize, $vColor, $vAdj, $vStock, (int)$matchedRow['id']]);
       } else {
+        $uniqueVSku = strtoupper($sku) . '-V' . ($idx + 1) . '-' . random_int(100, 999);
         $pdo->prepare("INSERT INTO product_variants (product_id, sku, size, color, price_adjustment_bdt, stock_quantity, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)")
-            ->execute([$id, $vSku, $vSize, $vColor, $vAdj, $vStock]);
+            ->execute([$id, $uniqueVSku, $vSize, $vColor, $vAdj, $vStock]);
         $keptIds[] = (int)$pdo->lastInsertId();
       }
     }
@@ -1850,6 +1856,7 @@ if ($requestUri === '/api/admin/products' && $method === 'POST') {
   $pdo->prepare("INSERT INTO audit_logs (actor_email, actor_uid, action, entity_type, entity_id, details, created_at) VALUES (?, ?, 'SAVE_PRODUCT', 'Product', ?, ?, ?)")
       ->execute([$admin['email'], $admin['uid'], $sku, "Saved product {$nameBn}", $now]);
 
+  @unlink($storefrontCacheFile);
   @unlink($storageDir . '/storefront_cache_v1.json');
   sendJson(['product' => ['id' => $id, 'sku' => $sku]]);
 }
@@ -2022,6 +2029,8 @@ if ($requestUri === '/api/admin/settings' && $method === 'PUT') {
         $now
       ]);
 
+  @unlink($storefrontCacheFile);
+  @unlink($storageDir . '/storefront_cache_v1.json');
   $row = $pdo->query("SELECT * FROM store_settings LIMIT 1")->fetch();
   sendJson(['settings' => formatSettingsRow($row)]);
 }
