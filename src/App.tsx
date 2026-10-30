@@ -567,7 +567,6 @@ export default function App() {
   }, [products]);
 
   const [offerSlideIndex, setOfferSlideIndex] = useState(0);
-  const [isOfferSliderPaused, setIsOfferSliderPaused] = useState(false);
   const offerCarouselRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -605,16 +604,16 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (specialOfferProducts.length <= 1 || isOfferSliderPaused) return;
+    if (specialOfferProducts.length <= 1) return;
     const timer = setInterval(() => {
       setOfferSlideIndex((prev) => {
         const next = (prev + 1) % specialOfferProducts.length;
         scrollOfferCarouselToIndex(next);
         return next;
       });
-    }, 4500);
+    }, 2200);
     return () => clearInterval(timer);
-  }, [specialOfferProducts.length, isOfferSliderPaused, scrollOfferCarouselToIndex]);
+  }, [specialOfferProducts.length, scrollOfferCarouselToIndex]);
 
   const handleCopyCoupon = (code: string) => {
     setCouponInput(code);
@@ -1105,10 +1104,6 @@ export default function App() {
           <section
             id="special-offers"
             aria-label="বিশেষ অফার ও ফ্ল্যাশ ডিল স্লাইডার"
-            onMouseEnter={() => setIsOfferSliderPaused(true)}
-            onMouseLeave={() => setIsOfferSliderPaused(false)}
-            onTouchStart={() => setIsOfferSliderPaused(true)}
-            onTouchEnd={() => setIsOfferSliderPaused(false)}
             className="bg-white rounded-2xl border border-[#286F65]/35 p-4 sm:p-6 space-y-5 shadow-xs"
           >
             {/* Slider Header: Title, Live Countdown, Active Coupons & Slide Controls */}
